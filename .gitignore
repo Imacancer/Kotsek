@@ -1,0 +1,24 @@
+# Ignore Python virtual environment
+backend/
+
+# Ignore Python cache files
+__pycache__/
+*.py[cod]
+
+# Ignore SQLite files
+*.sqlite3
+*.db
+
+# Ignore Flask instance folder
+instance/
+
+# Ignore operating system-specific files
+.DS_Store
+
+# Ignore compiled Python files
+*.pyo
+*.pyd
+
+# Ignore dependency-related files
+*.log
+*.env
