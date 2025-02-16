@@ -1,0 +1,10 @@
+#install flask
+
+flask
+flask-sqlalchemy
+flask-migrate
+flask-cors
+flask-socketio
+opencv-python
+ultralytics
+pytesseract
