@@ -11,3 +11,5 @@ README.md
 dump.txt
 backend/
 .next/
+detect.py
+train.py

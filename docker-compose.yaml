@@ -1,0 +1,32 @@
+services:
+
+  flask_api:
+    container_name: flask_api
+    build: 
+      context: ./flask_api
+      dockerfile: Dockerfile
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./flask_api:/app
+    networks:
+      - app-network
+
+
+  client:
+    container_name: client
+    build: 
+      context: ./client/kotsek
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./client/kotsek:/app
+    networks:
+      - app-network
+    depends_on:
+      - flask_api
+
+networks:
+  app-network:
+    driver: bridge

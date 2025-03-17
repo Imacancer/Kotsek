@@ -1,11 +1,160 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import MaxWidthWrapper from "@/components/MaxWidthWrapper";
+import axios from "axios";
+import { useRouter } from "next/navigation";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { toast } from "sonner";
 
 export default function LoginPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [registerEmail, setRegisterEmail] = useState("");
+  const [registerPassword, setRegisterPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
   const [scrollY, setScrollY] = useState(0);
   const [isLogin, setIsLogin] = useState(true);
+  const [profileImage, setProfileImage] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [user, setUser] = useState<{
+    id: number;
+    email: string;
+    username: string;
+    profile_image: string | null;
+  } | null>(null);
+
+  const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL;
+  const LOCAL_URL = process.env.NEXT_PUBLIC_URL;
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError("");
+
+    try {
+      if (!email || !password) {
+        setError("Email and password are required");
+        setIsLoading(false);
+        return;
+      }
+
+      const response = await axios.post(`${SERVER_URL}/login`, {
+        email,
+        password,
+      });
+
+      const { access_token, refresh_token, user } = response.data;
+
+      if (access_token && refresh_token) {
+        sessionStorage.setItem("access_token", access_token);
+        sessionStorage.setItem("refresh_token", refresh_token);
+        sessionStorage.setItem("user", JSON.stringify(user));
+        setUser(user);
+
+        router.push("/detect");
+      } else {
+        setError("Login failed. No authentication token received.");
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.error || "Login failed. Please try again.");
+      console.error("Error logging in:", err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setProfileImage(file);
+      // Create a preview URL
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setImagePreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleImageClick = () => {
+    // Trigger file input click when the preview or placeholder is clicked
+    fileInputRef.current?.click();
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+    setIsLoading(true);
+
+    // Form validation checks...
+
+    try {
+      const formData = new FormData();
+      formData.append("email", registerEmail);
+      formData.append("username", name);
+      formData.append("password", registerPassword);
+
+      if (profileImage) {
+        formData.append("profile_image", profileImage);
+      }
+
+      const response = await axios.post(`${SERVER_URL}/register`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+
+      toast("User created successfully", {
+        description: "Your account has been created successfully!",
+      });
+
+      // Check if tokens were returned from registration
+      if (response.data.access_token && response.data.refresh_token) {
+        sessionStorage.setItem("access_token", response.data.access_token);
+        sessionStorage.setItem("refresh_token", response.data.refresh_token);
+        sessionStorage.setItem("user", JSON.stringify(response.data.user));
+        setUser(response.data.user);
+
+        // Navigate to detect page after short delay
+        setTimeout(() => {
+          router.push("/detect");
+        }, 1500);
+      } else {
+        // If no token returned, go back to login form
+        setSuccess("Registration successful! Please login.");
+        setIsLogin(true);
+      }
+
+      // Reset form fields
+      setName("");
+      setRegisterEmail("");
+      setRegisterPassword("");
+      setConfirmPassword("");
+      setProfileImage(null);
+      setImagePreview(null);
+    } catch (err: any) {
+      setError(
+        err.response?.data?.error || "Registration failed. Please try again."
+      );
+      console.error("Registration error:", err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    try {
+      window.location.href = `${SERVER_URL}/google/login`;
+    } catch (error) {
+      console.error("Error logging in:", error);
+    }
+  };
 
   useEffect(() => {
     const handleScroll = () => {
@@ -38,17 +187,31 @@ export default function LoginPage() {
         <div className="w-full max-w-sm">
           {/* Login Card */}
           <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 shadow-xl border border-white/20 relative">
+            {/* Error message */}
+            {error && (
+              <Alert
+                variant="destructive"
+                className="mb-4 bg-red-500/10 text-red-500 border border-red-500/20"
+              >
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+
+            {/* Success message */}
+            {success && (
+              <Alert
+                variant="default"
+                className="mb-4 bg-green-500/10 text-green-500 border border-green-500/20"
+              >
+                <AlertDescription>{success}</AlertDescription>
+              </Alert>
+            )}
+
             <div className="text-center mb-6">
-              {" "}
-              {/* Reduced margin from mb-8 */}
               <h1 className="text-2xl font-bold text-white">
-                {" "}
-                {/* Reduced from text-3xl */}
                 Ko<span className="text-yellow-500">Tsek</span>
               </h1>
               <p className="text-white/80 mt-1 text-sm">
-                {" "}
-                {/* Reduced text size */}
                 Welcome back! Please login to continue.
               </p>
             </div>
@@ -91,7 +254,7 @@ export default function LoginPage() {
                 }}
               >
                 {/* Login Form */}
-                <form className="space-y-4">
+                <form className="space-y-4" onSubmit={handleLogin}>
                   <div>
                     <label
                       htmlFor="email"
@@ -102,6 +265,8 @@ export default function LoginPage() {
                     <input
                       type="email"
                       id="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
                       className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
                       placeholder="Enter your email"
                     />
@@ -117,6 +282,8 @@ export default function LoginPage() {
                     <input
                       type="password"
                       id="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
                       className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
                       placeholder="Enter your password"
                     />
@@ -146,9 +313,10 @@ export default function LoginPage() {
 
                   <button
                     type="submit"
-                    className="w-full bg-yellow-500 text-white py-2 px-4 rounded-lg font-medium hover:bg-yellow-400 transition-all duration-200 text-sm"
+                    className="w-full bg-yellow-500 text-white py-2 px-4 rounded-lg font-medium hover:bg-yellow-400 transition-all duration-200 text-sm disabled:opacity-50"
+                    disabled={isLoading}
                   >
-                    Sign In
+                    {isLoading ? "Signing in..." : "Sign In"}
                   </button>
 
                   <div className="relative my-4">
@@ -165,6 +333,8 @@ export default function LoginPage() {
                   <button
                     type="button"
                     className="w-full bg-white/10 border border-white/20 text-white py-2 px-4 rounded-lg font-medium hover:bg-white/20 transition-all duration-200 flex items-center justify-center gap-2 text-sm"
+                    onClick={handleGoogleLogin}
+                    disabled={!isLogin || isLoading}
                   >
                     <svg className="h-4 w-4" viewBox="0 0 24 24">
                       <path
@@ -196,20 +366,47 @@ export default function LoginPage() {
                   transform: `translateX(${isLogin ? "100%" : "0%"})`,
                 }}
               >
-                <form className="space-y-4">
+                <form className="space-y-4" onSubmit={handleRegister}>
                   <div>
                     <label
                       htmlFor="name"
                       className="block text-sm font-medium text-white/90 mb-1"
                     >
-                      Full Name
+                      Username
                     </label>
                     <input
                       type="text"
                       id="name"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
                       className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
-                      placeholder="Enter your full name"
+                      placeholder="Enter your username"
                     />
+                  </div>
+                  <div className="mb-4 text-center overflow-hidden">
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      accept="image/*"
+                      onChange={handleImageChange}
+                      className="hidden"
+                    />
+                    <div
+                      className="w-24 h-24 mx-auto rounded-full border border-white/30 flex items-center justify-center overflow-hidden cursor-pointer bg-white/10"
+                      onClick={handleImageClick}
+                    >
+                      {imagePreview ? (
+                        <img
+                          src={imagePreview}
+                          alt="Profile Preview"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <span className="text-xs text-white/60">
+                          Upload Image
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   <div>
@@ -222,6 +419,8 @@ export default function LoginPage() {
                     <input
                       type="email"
                       id="register-email"
+                      value={registerEmail}
+                      onChange={(e) => setRegisterEmail(e.target.value)}
                       className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
                       placeholder="Enter your email"
                     />
@@ -237,6 +436,8 @@ export default function LoginPage() {
                     <input
                       type="password"
                       id="register-password"
+                      value={registerPassword}
+                      onChange={(e) => setRegisterPassword(e.target.value)}
                       className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
                       placeholder="Create a password"
                     />
@@ -252,6 +453,8 @@ export default function LoginPage() {
                     <input
                       type="password"
                       id="confirm-password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
                       className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
                       placeholder="Confirm your password"
                     />
@@ -259,9 +462,10 @@ export default function LoginPage() {
 
                   <button
                     type="submit"
-                    className="w-full bg-yellow-500 text-white py-2 px-4 rounded-lg font-medium hover:bg-yellow-400 transition-all duration-200 text-sm"
+                    className="w-full bg-yellow-500 text-white py-2 px-4 rounded-lg font-medium hover:bg-yellow-400 transition-all duration-200 text-sm disabled:opacity-50"
+                    disabled={isLoading}
                   >
-                    Create Account
+                    {isLoading ? "Creating Account..." : "Create Account"}
                   </button>
 
                   <div className="relative my-4">
@@ -278,6 +482,7 @@ export default function LoginPage() {
                   <button
                     type="button"
                     className="w-full bg-white/10 border border-white/20 text-white py-2 px-4 rounded-lg font-medium hover:bg-white/20 transition-all duration-200 flex items-center justify-center gap-2 text-sm"
+                    disabled={isLoading}
                   >
                     <svg className="h-4 w-4" viewBox="0 0 24 24">
                       <path

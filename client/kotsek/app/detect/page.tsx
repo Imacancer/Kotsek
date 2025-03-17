@@ -12,6 +12,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Play, Square, Camera } from "lucide-react";
 import { io } from "socket.io-client";
+import { toast } from "sonner";
+import { useRouter } from "next/navigation";
+import axios from "axios";
 
 interface MediaDeviceInfo {
   deviceId: string;
@@ -21,6 +24,7 @@ interface MediaDeviceInfo {
 interface Detection {
   label: string;
   confidence: number;
+  color_annotation: string;
   coordinates: number[][];
   ocr_text: string;
 }
@@ -36,6 +40,20 @@ const SurveillanceInterface = () => {
   const [selectedCamera, setSelectedCamera] = useState<string>("0");
   const [enabled, setEnabled] = useState(false);
   const socket = useRef<any>(null);
+  const [user, setUser] = useState<{
+    id: number;
+    email: string;
+    username: string;
+    profile_image: string | null;
+  } | null>(null);
+  const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  const router = useRouter();
+
+  const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL;
+  const LOCAL_URL = process.env.NEXT_PUBLIC_URL;
 
   // Parking monitoring state static lang
   const [parkingData, setParkingData] = useState<ParkingSlot[]>([]);
@@ -43,7 +61,8 @@ const SurveillanceInterface = () => {
   const [entryDetectionData, setEntryDetectionData] = useState({
     vehicleType: "",
     plateNumber: "",
-    carBrand: "",
+    //carBrand: "",
+    colorAnnotation: "",
     ocrText: "",
     annotationLabel: 0,
   });
@@ -53,6 +72,203 @@ const SurveillanceInterface = () => {
     receivedFrame: false,
     error: "",
   });
+
+  useEffect(() => {
+    // Function to handle OAuth callback response
+    const handleOAuthCallback = () => {
+      // Check URL search parameters first (this is how most OAuth callbacks work)
+      const searchParams = new URLSearchParams(window.location.search);
+      const token = searchParams.get("token");
+      const authProvider = searchParams.get("authProvider");
+
+      console.log("Token from URL:", token);
+      console.log("Auth provider from URL:", authProvider);
+
+      if (token) {
+        // Store access token
+        sessionStorage.setItem("access_token", token);
+        console.log("Token stored in session:", token);
+
+        // If we have an auth provider, store that info
+        if (authProvider) {
+          sessionStorage.setItem("auth_provider", authProvider);
+        }
+
+        try {
+          if (!token || token.split(".").length !== 3) {
+            throw new Error("Invalid token format");
+          }
+
+          const base64Url = token.split(".")[1];
+          const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
+
+          // Check if the base64 string is valid before decoding
+          if (!/^[A-Za-z0-9+/=]*$/.test(base64)) {
+            throw new Error("Malformed base64 string in token");
+          }
+
+          const jsonPayload = decodeURIComponent(
+            atob(base64)
+              .split("")
+              .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+              .join("")
+          );
+
+          const payload = JSON.parse(jsonPayload);
+          console.log("JWT payload:", payload);
+
+          if (payload) {
+            const userData = {
+              id: payload.sub || payload.id || payload.identity,
+              email: payload.email,
+              username: payload.firstName
+                ? `${payload.firstName} ${payload.lastName || ""}`
+                : payload.email,
+              profile_image: payload.picture || null,
+            };
+
+            sessionStorage.setItem("user", JSON.stringify(userData));
+            setUser(userData);
+            setIsAuthenticated(true);
+            console.log("User data stored:", userData);
+            console.log("Received Token:", token);
+          }
+        } catch (e) {
+          console.error("Error parsing JWT token:", e);
+          setError("Invalid authentication token.");
+          fetchUserData(token); // Fallback to API request
+        }
+
+        // Clean the URL to remove params
+        window.history.replaceState(
+          {},
+          document.title,
+          window.location.pathname
+        );
+
+        // Show success toast
+        toast(
+          `Successfully signed in${
+            authProvider ? ` with ${authProvider}` : ""
+          }`,
+          {
+            description: "Welcome to KoTsek!",
+          }
+        );
+
+        return true;
+      }
+
+      return false;
+    };
+
+    // Check for OAuth callback response when component mounts
+    const callbackHandled = handleOAuthCallback();
+
+    // Add this debug line
+    console.log("Callback handled:", callbackHandled);
+
+    // Function to fetch user data with token
+    const fetchUserData = async (token: any) => {
+      try {
+        const response = await axios.get(`${SERVER_URL}/user`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        // Store user data if successful
+        if (response.data) {
+          sessionStorage.setItem("user", JSON.stringify(response.data));
+          setUser(response.data);
+          setIsAuthenticated(true);
+        }
+      } catch (error) {
+        console.error("Error fetching user data:", error);
+        setError("Failed to fetch user data");
+      }
+    };
+
+    // Handle error parameters
+    const searchParams = new URLSearchParams(window.location.search);
+    if (searchParams.has("error")) {
+      setError(searchParams.get("error") || "Authentication failed");
+
+      // Clean the URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, [router]);
+
+  // Function to fetch user data with token
+  const fetchUserData = async (token: string) => {
+    try {
+      const response = await axios.get(`${SERVER_URL}/user`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      // Store user data if successful
+      if (response.data) {
+        sessionStorage.setItem("user", JSON.stringify(response.data));
+        setUser(response.data);
+      }
+    } catch (error) {
+      console.error("Error fetching user data:", error);
+      setError("Failed to fetch user data");
+      // On failure, redirect to login
+      router.replace("/login");
+    }
+  };
+
+  useEffect(() => {
+    const checkAuthentication = () => {
+      const token = sessionStorage.getItem("access_token");
+
+      if (!token) {
+        console.log("No token found, redirecting to login");
+        router.replace("/login");
+        return;
+      }
+
+      try {
+        // Verify the token is valid JWT
+        const tokenParts = token.split(".");
+        if (tokenParts.length !== 3) {
+          throw new Error("Invalid token format");
+        }
+
+        // Decode and check token expiration
+        const base64Url = tokenParts[1];
+        let base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
+        // Add padding if necessary
+        while (base64.length % 4) {
+          base64 += "=";
+        }
+        const payload = JSON.parse(atob(base64));
+
+        if (payload.exp && payload.exp * 1000 < Date.now()) {
+          throw new Error("Token expired");
+        }
+
+        // Fetch or set user data
+        const storedUserData = sessionStorage.getItem("user");
+        if (storedUserData) {
+          setUser(JSON.parse(storedUserData));
+        } else {
+          fetchUserData(token);
+        }
+
+        setIsAuthenticated(true);
+      } catch (error) {
+        console.error("Authentication error:", error);
+        sessionStorage.removeItem("access_token");
+        sessionStorage.removeItem("user");
+        toast.error("Authentication failed. Please login again.");
+        router.replace("/login");
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    checkAuthentication();
+  }, [router]);
 
   const determineVehicleType = (label: string | number): string => {
     const numericLabel = typeof label === "string" ? parseInt(label) : label;
@@ -142,7 +358,7 @@ const SurveillanceInterface = () => {
 
   const startVideo = () => {
     try {
-      socket.current = io("http://localhost:5001", {
+      socket.current = io(`${SERVER_URL}`, {
         reconnection: true,
         reconnectionAttempts: 5,
         timeout: 10000,
@@ -173,7 +389,7 @@ const SurveillanceInterface = () => {
           }
 
           // Assign entrance frame
-          if (data.entrance_frame && entryVideoRef.current) {
+          if (data?.entrance_frame && entryVideoRef.current) {
             entryVideoRef.current.src = `data:image/jpeg;base64,${data.entrance_frame}`;
           }
 
@@ -184,12 +400,12 @@ const SurveillanceInterface = () => {
                 current.confidence > prev.confidence ? current : prev
             );
 
+            console.log("Detected OCR Text:", mostConfidentDetection.ocr_text);
+
             setEntryDetectionData({
               vehicleType: determineVehicleType(mostConfidentDetection.label),
-              plateNumber: mostConfidentDetection.ocr_text || "UVV 2443",
-              carBrand: `Conf: ${(
-                mostConfidentDetection.confidence * 100
-              ).toFixed(1)}%`,
+              plateNumber: mostConfidentDetection.ocr_text || "NFP 8793",
+              colorAnnotation: mostConfidentDetection.color_annotation,
               ocrText: mostConfidentDetection.ocr_text,
               annotationLabel: parseInt(mostConfidentDetection.label),
             });
@@ -197,7 +413,7 @@ const SurveillanceInterface = () => {
             setEntryDetectionData({
               vehicleType: "No detection",
               plateNumber: "N/A",
-              carBrand: "N/A",
+              colorAnnotation: "N/A",
               ocrText: "",
               annotationLabel: 0,
             });
@@ -226,6 +442,7 @@ const SurveillanceInterface = () => {
 
   const stopVideo = () => {
     if (socket.current) {
+      socket.current.emit("stop_video");
       socket.current.disconnect();
       socket.current = null;
     }
@@ -359,9 +576,23 @@ const SurveillanceInterface = () => {
           <Card className="col-span-1">
             <CardContent className="pt-4 pb-4">
               <p className="text-xs font-medium text-gray-500">
-                Entry/Exit Confidence
+                Detected Color
               </p>
-              <p className="text-lg font-bold">{entryDetectionData.carBrand}</p>
+              <div className="flex items-center space-x-2">
+                <div
+                  className="w-6 h-6 rounded-full border border-gray-400"
+                  style={{
+                    backgroundColor:
+                      entryDetectionData.colorAnnotation || "#ffffff",
+                  }}
+                />
+                <p
+                  className="text-lg font-bold"
+                  style={{ color: entryDetectionData.colorAnnotation }}
+                >
+                  {entryDetectionData.colorAnnotation}
+                </p>
+              </div>
             </CardContent>
           </Card>
         </div>

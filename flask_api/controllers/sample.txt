@@ -1,0 +1,82 @@
+@auth_bp.route('/register', methods=['POST'])
+def register():
+    try:
+        # Get form data instead of JSON
+        email = request.form.get('email')
+        username = request.form.get('username')
+        password = request.form.get('password')
+        profile_image = request.files.get('profile_image')
+
+        if not email or not password:
+            return jsonify({'error': 'Email and password are required'}), 400
+
+        existing_user = User.query.filter_by(email=email).first()
+        if existing_user:
+            return jsonify({'error': 'Email already exists'}), 400
+
+        # Handle image upload
+        image_url = None
+        if profile_image and profile_image.filename != '':
+            # Generate unique filename
+            file_ext = os.path.splitext(profile_image.filename)[1]
+            unique_filename = f"{uuid.uuid4()}{file_ext}"
+            
+            # Upload to Supabase Storage
+            bucket_name = 'profile_images'
+            file_path = f"user_profiles/{unique_filename}"
+            
+            # Upload the file
+            try:
+                supabase.storage.from_(bucket_name).upload(
+                    file_path,
+                    profile_image.read(),
+                    file_options={"content-type": profile_image.mimetype}
+                )
+                # Generate public URL
+                image_url = f"{os.getenv('SUPABASE_URL')}/storage/v1/object/public/{bucket_name}/{file_path}"
+            except Exception as upload_error:
+                print(f"Error uploading image: {upload_error}")
+                return jsonify({'error': 'Failed to upload profile image'}), 500
+
+        # Create new user
+        new_user = User(
+            email=email,
+            username=username,
+            is_verified=False,
+            image_url=image_url  # This will be None if no image was uploaded
+        )
+        new_user.set_password(password)
+        
+        db.session.add(new_user)
+        db.session.commit()
+
+        # Generate JWT tokens for immediate login after registration
+        access_token = create_access_token(identity=new_user.id)
+        refresh_token = create_refresh_token(identity=new_user.id)
+
+        return jsonify({
+            'access_token': access_token,
+            'refresh_token': refresh_token,
+            'user': new_user.to_dict()
+        }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+@auth_bp.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    user = User.query.filter_by(email=data['email']).first()
+    
+    if not user or not user.check_password(data['password']):
+        return jsonify({'error': 'Invalid credentials'}), 401
+    
+    access_token = create_access_token(identity=user.id)
+    refresh_token = create_refresh_token(identity=user.id)
+    
+    return jsonify({
+        'access_token': access_token,
+        'refresh_token': refresh_token,
+        'user': user.to_dict()  # Make sure to_dict() returns all needed fields
+    }), 200
