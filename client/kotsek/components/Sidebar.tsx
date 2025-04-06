@@ -1,14 +1,10 @@
 "use client";
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import Image from "next/image";
 import {
   Home,
   Car,
-  Settings,
   Users,
-  HelpCircle,
-  Cog,
   ChartNoAxesCombined,
   AlertTriangleIcon,
   Lock,
@@ -16,6 +12,13 @@ import {
 } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { toast } from "sonner";
+
+type NavItemType = {
+  name: string;
+  icon: React.ComponentType<{ className?: string }>;
+  href: string;
+  onClick?: () => void;
+};
 
 const Sidebar = () => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -29,11 +32,16 @@ const Sidebar = () => {
   const pathname = usePathname();
   const router = useRouter();
 
-  // Check authentication status when component mounts
+  // Check authentication status when component mounts or route changes
   useEffect(() => {
     const checkAuth = () => {
       const token = sessionStorage.getItem("access_token");
-      setIsAuthenticated(!!token);
+      const isAuth = !!token;
+
+      // Only update state if there's a change to avoid unnecessary renders
+      if (isAuth !== isAuthenticated) {
+        setIsAuthenticated(isAuth);
+      }
 
       // Get user data if authenticated
       if (token) {
@@ -56,6 +64,11 @@ const Sidebar = () => {
     // Check initially
     checkAuth();
 
+    console.log("User data:", user);
+
+    // Set up interval to periodically check auth status
+    const intervalId = setInterval(checkAuth, 1000);
+
     // Set up event listener for storage changes
     const handleStorageChange = () => {
       checkAuth();
@@ -67,10 +80,11 @@ const Sidebar = () => {
     window.addEventListener("authChange", handleStorageChange);
 
     return () => {
+      clearInterval(intervalId);
       window.removeEventListener("storage", handleStorageChange);
       window.removeEventListener("authChange", handleStorageChange);
     };
-  }, []);
+  }, [pathname, isAuthenticated]);
 
   // Basic navigation items always visible
   const baseNavItems = [
@@ -82,6 +96,7 @@ const Sidebar = () => {
   const protectedNavItems = [
     { name: "Detect", icon: Car, href: "/detect" },
     { name: "Analytics", icon: ChartNoAxesCombined, href: "/analytics" },
+    { name: "Admin", icon: User, href: "/admin" },
   ];
 
   // Auth-related navigation
@@ -112,7 +127,7 @@ const Sidebar = () => {
     authNavItem,
   ];
 
-  const handleNavItemClick = (item: any) => {
+  const handleNavItemClick = (item: NavItemType) => {
     if (item.href === "/detect" && !isAuthenticated) {
       toast.error("Please login to access the detection feature");
       router.push("/login");
@@ -126,8 +141,6 @@ const Sidebar = () => {
 
     return true;
   };
-
-  // console.log("User:", user);
 
   return (
     <aside

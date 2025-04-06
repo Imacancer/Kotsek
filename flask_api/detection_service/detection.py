@@ -10,10 +10,11 @@ from threading import Thread
 from queue import Queue
 
 class VideoProcessor:
-    def __init__(self, socketio, video_path, model_path="./sample/best.pt"):
+    def __init__(self, socketio, video_path, model_path="./sample/best.pt", plate_model_path="./plates/best.pt"):
         self.socketio = socketio
         self.video_path = video_path
-        self.model = YOLO(model_path)
+        self.model = YOLO(model_path)  # Vehicle detection model
+        self.plate_model = YOLO(plate_model_path)  # Plate detection model
         self.frame_queue = Queue(maxsize=10)
         self.result_queue = Queue(maxsize=10)
         self.running = False
@@ -34,34 +35,29 @@ class VideoProcessor:
     def extract_text_from_roi(self, image, box):
         """
         Extract text from the ROI defined by the bounding box.
-        A padding is added, and the ROI is upscaled if it is too small to improve OCR performance.
         """
         try:
             if not box or len(box[0]) != 4:
                 return ""
             x1, y1, x2, y2 = map(int, box[0])
-            padding = 10
-            y1 = max(0, y1 - padding)
-            y2 = min(image.shape[0], y2 + padding)
-            x1 = max(0, x1 - padding)
-            x2 = min(image.shape[1], x2 + padding)
+            
+            # Extract ROI directly from image
             roi = image[y1:y2, x1:x2]
-
-            # Upscale ROI if too small for better OCR accuracy
-            h, w = roi.shape[:2]
-            if w < 100 or h < 30:
-                scale_factor = 2
-                roi = cv2.resize(roi, (w * scale_factor, h * scale_factor), interpolation=cv2.INTER_CUBIC)
-
-            # Ensure ROI is 3-channel
-            if len(roi.shape) == 2:
-                roi = cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
-
-            # Run OCR on the ROI
-            ocr_result = self.ocr.ocr(roi, cls=True)
-            # Combine multiple OCR results if present
-            text = " ".join([line[1][0] for line in ocr_result])
-            return text.strip()
+            
+            # Basic image preprocessing
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                        cv2.THRESH_BINARY, 11, 2)
+            
+            # Run OCR on the processed image
+            ocr_result = self.ocr.ocr(thresh, cls=True)
+            
+            # Process OCR results similar to detect.py
+            if ocr_result and len(ocr_result) > 0:
+                text = " ".join([line[1][0] for line in ocr_result[0] if line and len(line) > 1])
+                return text.strip()
+            return ""
+            
         except Exception as e:
             print(f"OCR Error: {e}")
             return ""
@@ -69,7 +65,7 @@ class VideoProcessor:
     def process_frame(self, frame, size=(640, 480)):
         # Resize the frame to 640x480
         frame = cv2.resize(frame, size)
-        results = self.model(frame, conf=0.5, iou=0.5)
+        results = self.model(frame, conf=0.5, iou=0.5)  # Vehicle detection
         detections = []
         for box in results[0].boxes:
             coords = box.xyxy.cpu().numpy().tolist()[0]
@@ -78,23 +74,43 @@ class VideoProcessor:
             x1, y1, x2, y2 = map(int, coords)
             roi = frame[y1:y2, x1:x2]
 
-            # Example: Calculate the mean BGR color (for a color annotation)
+            # Plate detection within the vehicle ROI
+            plate_results = self.plate_model(roi, conf=0.5, iou=0.5)
+            plate_detections = []
+            for plate_box in plate_results[0].boxes:
+                plate_coords = plate_box.xyxy.cpu().numpy().tolist()[0]
+                plate_confidence = float(plate_box.conf)
+                px1, py1, px2, py2 = map(int, plate_coords)
+                plate_roi = roi[py1:py2, px1:px2]
+
+                # Temporarily comment out OCR
+                plate_text = self.extract_text_from_roi(roi, [[px1, py1, px2, py2]])
+                # plate_text = ""  # Placeholder for OCR text
+                self.log_detection("Plate", plate_confidence, plate_text)
+
+                plate_detections.append({
+                    "label": "Plate",
+                    "confidence": plate_confidence,
+                    "coordinates": [px1, py1, px2, py2],
+                    "ocr_text": plate_text,
+                })
+
+            # Calculate the mean BGR color for the vehicle ROI
             hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
             mean_hsv = cv2.mean(hsv_roi)[:3]
             mean_hsv_uint8 = np.array([[mean_hsv]], dtype=np.uint8)
             mean_bgr = cv2.cvtColor(mean_hsv_uint8, cv2.COLOR_HSV2BGR)[0][0]
             hex_color = '#{:02x}{:02x}{:02x}'.format(int(mean_bgr[2]), int(mean_bgr[1]), int(mean_bgr[0]))
 
-            # Apply ANPR (OCR) on the detected bounding box (with padding)
-            ocr_text = self.extract_text_from_roi(frame, [[x1, y1, x2, y2]])
-            self.log_detection(label, confidence, ocr_text)
+            # Log vehicle detection
+            self.log_detection(label, confidence, "")
 
             detections.append({
                 "label": label,
-                "color_annotation": hex_color,
+                "color_annotation": hex_color,  # Include color annotation
                 "confidence": confidence,
                 "coordinates": coords,
-                "ocr_text": ocr_text,
+                "plates": plate_detections,  # Include plate detections
             })
         annotated_frame = results[0].plot()
         return annotated_frame, detections

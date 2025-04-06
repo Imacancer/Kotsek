@@ -37,6 +37,8 @@ def init_jwt(app):
     jwt = JWTManager(app)
     return jwt
 
+ORGANIZATION_DOMAIN = os.getenv('ORGANIZATION_DOMAIN')
+
 def generate_google_oauth_config():
     """Generate Google OAuth configuration (similar to googleOauthConfig in Golang)"""
     return {
@@ -55,7 +57,13 @@ def google_login():
     google_config = generate_google_oauth_config()
     
     # Build the authorization URL
-    auth_url = f"{google_config['auth_uri']}?client_id={google_config['client_id']}&redirect_uri={google_config['redirect_uri']}&response_type=code&scope={google_config['scope']}&state={OAUTH_STATE_STRING}"
+    # auth_url = f"{google_config['auth_uri']}?client_id={google_config['client_id']}&redirect_uri={google_config['redirect_uri']}&response_type=code&scope={google_config['scope']}&state={OAUTH_STATE_STRING}"
+    auth_url = (
+        f"{google_config['auth_uri']}?client_id={google_config['client_id']}"
+        f"&redirect_uri={google_config['redirect_uri']}&response_type=code"
+        f"&scope={google_config['scope']}&state={OAUTH_STATE_STRING}"
+        f"&hd={ORGANIZATION_DOMAIN}"
+    )
     
     return redirect(auth_url)
 
@@ -66,12 +74,12 @@ def google_callback():
     error = request.args.get('error')
     if error:
         # User cancelled the login or another error occurred
-        return redirect(f"{os.getenv('FRONTEND_URL')}/login?error={error}", code=303)
+        return redirect(f"{os.getenv('ERROR_PAGE')}?error={error}", code=303)
     
     # Get the authorization code
     code = request.args.get('code')
     if not code:
-        return redirect(f"{os.getenv('FRONTEND_URL')}/login?error=no_code", code=303)
+        return redirect(f"{os.getenv('ERROR_PAGE')}?error=no_code", code=303)
     
     # Exchange authorization code for tokens
     google_config = generate_google_oauth_config()
@@ -88,7 +96,7 @@ def google_callback():
     
     if token_response.status_code != 200:
         print(f"Token error: {token_response.text}")
-        return redirect(f"{os.getenv('FRONTEND_URL')}/login?error=token_exchange_failed", code=303)
+        return redirect(f"{os.getenv('ERROR_PAGE')}?error=token_exchange_failed", code=303)
     
     token_data = token_response.json()
     access_token = token_data.get('access_token')
@@ -101,7 +109,7 @@ def google_callback():
     
     if user_info_response.status_code != 200:
         print(f"User info error: {user_info_response.text}")
-        return redirect(f"{os.getenv('FRONTEND_URL')}/login?error=user_info_failed", code=303)
+        return redirect(f"{os.getenv('ERROR_PAGE')}?error=user_info_failed", code=303)
     
     user_info = user_info_response.json()
     
@@ -113,7 +121,7 @@ def google_callback():
     google_id = user_info.get('id')
     
     if not email or not google_id:
-        return redirect(f"{os.getenv('FRONTEND_URL')}/login?error=missing_user_info", code=303)
+        return redirect(f"{os.getenv('ERROR_PAGE')}?error=missing_user_info", code=303)
     
     # Find or create user
     user = User.query.filter_by(google_id=google_id).first()
@@ -180,7 +188,7 @@ def google_callback():
         except Exception as e:
             db.session.rollback()
             print(f"Error creating user: {e}")
-            return redirect(f"{os.getenv('FRONTEND_URL')}/login?error=user_creation_failed", code=303)
+            return redirect(f"{os.getenv('ERROR_PAGE')}?error=user_creation_failed", code=303)
     
     # Generate JWT tokens
     jwt_access_token = create_access_token(
