@@ -14,7 +14,7 @@ build:
 	docker-compose build
 up:
 	@echo "Starting $(SERVICE_NAME)..."
-	docker-compose up -d 
+	docker-compose up -d
 down:
 	@echo "Stopping $(SERVICE_NAME)..."
 	docker-compose down

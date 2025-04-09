@@ -10,7 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -33,7 +33,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
-import { CalendarIcon, PlusIcon, TrashIcon, ChevronDown } from "lucide-react";
+import { CalendarIcon, PlusIcon, TrashIcon } from "lucide-react";
 import { format } from "date-fns";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -89,7 +89,7 @@ const IncidentReportPage = () => {
   const [sortBy, setSortBy] = React.useState("date");
   const [vehicleTypeFilter, setVehicleTypeFilter] = React.useState("");
 
-  const onSubmit = (data: any) => {
+  const onSubmit = (data: z.infer<typeof incidentSchema>) => {
     const newIncident = {
       ...data,
       id: incidents.length + 1,
@@ -275,7 +275,7 @@ const IncidentReportPage = () => {
                         name={`vehicles.${index}.driversName`}
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Driver's Name</FormLabel>
+                            <FormLabel>Driver&apos;s Name</FormLabel>
                             <FormControl>
                               <Input {...field} />
                             </FormControl>

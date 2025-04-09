@@ -9,8 +9,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
-import { Camera, Play } from "lucide-react";
 import {
   BarChart,
   Bar,
@@ -44,7 +42,6 @@ interface MonthlyData {
 type ViewType = "daily" | "weekly" | "monthly";
 
 const AnalyticsDashboard = () => {
-  const [selectedCamera, setSelectedCamera] = useState("camera1");
   const [selectedView, setSelectedView] = useState<ViewType>("daily");
 
   // Sample daily data

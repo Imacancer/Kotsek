@@ -11,27 +11,51 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Play, Square, Camera } from "lucide-react";
-import { io } from "socket.io-client";
+import { io, Socket } from "socket.io-client";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import axios from "axios";
+import ParkingSlotsComponent, { ParkingSlot } from "@/components/ParkingSlot";
+import UnassignedVehiclesTable from "@/components/Unassigned";
 
 interface MediaDeviceInfo {
   deviceId: string;
   label: string;
 }
 
-interface Detection {
+interface PlateDetection {
   label: string;
   confidence: number;
-  color_annotation: string;
-  coordinates: number[][];
+  coordinates: number[];
   ocr_text: string;
 }
 
-interface ParkingSlot {
+interface Detection {
+  label: string;
+  confidence: number;
+  coordinates: number[];
+  color_annotation: string;
+  plates: PlateDetection[];
+}
+
+interface User {
   id: number;
-  status: "available" | "occupied" | "reserved";
+  email: string;
+  username: string;
+  profile_image: string | null;
+}
+
+interface EntryDetectionData {
+  vehicleType: string;
+  plateNumber: string;
+  colorAnnotation: string;
+  ocrText: string;
+  annotationLabel: number;
+}
+
+interface VideoFrameData {
+  entrance_frame: string;
+  entrance_detections: Detection[];
 }
 
 const SurveillanceInterface = () => {
@@ -39,55 +63,56 @@ const SurveillanceInterface = () => {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedCamera, setSelectedCamera] = useState<string>("0");
   const [enabled, setEnabled] = useState(false);
-  const socket = useRef<any>(null);
-  const [user, setUser] = useState<{
-    id: number;
-    email: string;
-    username: string;
-    profile_image: string | null;
-  } | null>(null);
-  const [error, setError] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const socket = useRef<Socket | null>(null);
 
+  const [debugInfo, setDebugInfo] = useState({
+    lastError: "",
+    socketStatus: "disconnected",
+    authStatus: "checking",
+  });
   const router = useRouter();
 
   const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL;
-  const LOCAL_URL = process.env.NEXT_PUBLIC_URL;
 
-  // Parking monitoring state static lang
+  // Parking monitoring state
   const [parkingData, setParkingData] = useState<ParkingSlot[]>([]);
 
-  const [entryDetectionData, setEntryDetectionData] = useState({
-    vehicleType: "",
-    plateNumber: "",
-    //carBrand: "",
-    colorAnnotation: "",
-    ocrText: "",
-    annotationLabel: 0,
-  });
+  const [entryDetectionData, setEntryDetectionData] =
+    useState<EntryDetectionData>({
+      vehicleType: "",
+      plateNumber: "",
+      colorAnnotation: "",
+      ocrText: "",
+      annotationLabel: 0,
+    });
 
-  const [debugInfo, setDebugInfo] = useState({
-    lastDetection: null as Detection | null,
-    receivedFrame: false,
-    error: "",
-  });
+  // Calculate parking summary statistics
+  const totalSpaces = parkingData.length;
+  const occupiedSpaces = parkingData.filter(
+    (slot) => slot.status === "occupied"
+  ).length;
+  const reservedSpaces = parkingData.filter(
+    (slot) => slot.status === "reserved"
+  ).length;
+  const vacantSpaces = totalSpaces - occupiedSpaces - reservedSpaces;
+  const capacityStatus =
+    occupiedSpaces === totalSpaces
+      ? "Full Capacity"
+      : occupiedSpaces > totalSpaces * 0.8
+      ? "Near Full"
+      : "Available";
 
   useEffect(() => {
     // Function to handle OAuth callback response
-    const handleOAuthCallback = () => {
+    const handleOAuthCallback = (): boolean => {
       // Check URL search parameters first (this is how most OAuth callbacks work)
       const searchParams = new URLSearchParams(window.location.search);
       const token = searchParams.get("token");
       const authProvider = searchParams.get("authProvider");
 
-      console.log("Token from URL:", token);
-      console.log("Auth provider from URL:", authProvider);
-
       if (token) {
         // Store access token
         sessionStorage.setItem("access_token", token);
-        console.log("Token stored in session:", token);
 
         // If we have an auth provider, store that info
         if (authProvider) {
@@ -115,10 +140,9 @@ const SurveillanceInterface = () => {
           );
 
           const payload = JSON.parse(jsonPayload);
-          console.log("JWT payload:", payload);
 
           if (payload) {
-            const userData = {
+            const userData: User = {
               id: payload.sub || payload.id || payload.identity,
               email: payload.email,
               username: payload.firstName
@@ -128,14 +152,14 @@ const SurveillanceInterface = () => {
             };
 
             sessionStorage.setItem("user", JSON.stringify(userData));
-            setUser(userData);
-            setIsAuthenticated(true);
-            console.log("User data stored:", userData);
-            console.log("Received Token:", token);
+            setDebugInfo((prev) => ({ ...prev, authStatus: "authenticated" }));
           }
-        } catch (e) {
-          console.error("Error parsing JWT token:", e);
-          setError("Invalid authentication token.");
+        } catch {
+          setDebugInfo((prev) => ({
+            ...prev,
+            lastError: "Invalid authentication token",
+            authStatus: "failed",
+          }));
           fetchUserData(token); // Fallback to API request
         }
 
@@ -163,36 +187,18 @@ const SurveillanceInterface = () => {
     };
 
     // Check for OAuth callback response when component mounts
-    const callbackHandled = handleOAuthCallback();
-
-    // Add this debug line
-    console.log("Callback handled:", callbackHandled);
-
-    // Function to fetch user data with token
-    const fetchUserData = async (token: any) => {
-      try {
-        const response = await axios.get(`${SERVER_URL}/user`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-
-        // Store user data if successful
-        if (response.data) {
-          sessionStorage.setItem("user", JSON.stringify(response.data));
-          setUser(response.data);
-          setIsAuthenticated(true);
-        }
-      } catch (error) {
-        console.error("Error fetching user data:", error);
-        setError("Failed to fetch user data");
-      }
-    };
+    handleOAuthCallback();
 
     // Handle error parameters
     const searchParams = new URLSearchParams(window.location.search);
     if (searchParams.has("error")) {
-      setError(searchParams.get("error") || "Authentication failed");
-
       // Clean the URL
+      const errorMsg = searchParams.get("error") || "Authentication failed";
+      setDebugInfo((prev) => ({
+        ...prev,
+        lastError: errorMsg,
+        authStatus: "failed",
+      }));
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, [router]);
@@ -207,11 +213,14 @@ const SurveillanceInterface = () => {
       // Store user data if successful
       if (response.data) {
         sessionStorage.setItem("user", JSON.stringify(response.data));
-        setUser(response.data);
+        setDebugInfo((prev) => ({ ...prev, authStatus: "authenticated" }));
       }
-    } catch (error) {
-      console.error("Error fetching user data:", error);
-      setError("Failed to fetch user data");
+    } catch {
+      setDebugInfo((prev) => ({
+        ...prev,
+        lastError: "Failed to fetch user data",
+        authStatus: "failed",
+      }));
       // On failure, redirect to login
       router.replace("/login");
     }
@@ -222,7 +231,6 @@ const SurveillanceInterface = () => {
       const token = sessionStorage.getItem("access_token");
 
       if (!token) {
-        console.log("No token found, redirecting to login");
         router.replace("/login");
         return;
       }
@@ -250,20 +258,20 @@ const SurveillanceInterface = () => {
         // Fetch or set user data
         const storedUserData = sessionStorage.getItem("user");
         if (storedUserData) {
-          setUser(JSON.parse(storedUserData));
+          setDebugInfo((prev) => ({ ...prev, authStatus: "authenticated" }));
         } else {
           fetchUserData(token);
         }
-
-        setIsAuthenticated(true);
-      } catch (error) {
-        console.error("Authentication error:", error);
+      } catch {
         sessionStorage.removeItem("access_token");
         sessionStorage.removeItem("user");
+        setDebugInfo((prev) => ({
+          ...prev,
+          lastError: "Authentication failed",
+          authStatus: "failed",
+        }));
         toast.error("Authentication failed. Please login again.");
         router.replace("/login");
-      } finally {
-        setIsLoading(false);
       }
     };
 
@@ -282,45 +290,7 @@ const SurveillanceInterface = () => {
     }
   };
 
-  // Calculate parking summary statistics
-  const totalSpaces = parkingData.length;
-  const occupiedSpaces = parkingData.filter(
-    (slot) => slot.status === "occupied"
-  ).length;
-  const reservedSpaces = parkingData.filter(
-    (slot) => slot.status === "reserved"
-  ).length;
-  const vacantSpaces = totalSpaces - occupiedSpaces - reservedSpaces;
-  const capacityStatus =
-    occupiedSpaces === totalSpaces
-      ? "Full Capacity"
-      : occupiedSpaces > totalSpaces * 0.8
-      ? "Near Full"
-      : "Available";
-
-  const ParkingSlot = ({
-    id,
-    status,
-  }: {
-    id: number;
-    status: "available" | "occupied" | "reserved";
-  }) => (
-    <div
-      className={`
-        w-24 h-32 border-2 rounded-md flex items-center justify-center font-bold
-        ${
-          status === "occupied"
-            ? "bg-red-200 border-red-500"
-            : status === "reserved"
-            ? "bg-yellow-200 border-yellow-500"
-            : "bg-green-200 border-green-500"
-        }
-      `}
-    >
-      {id}
-    </div>
-  );
-
+  // Initialize parking data
   useEffect(() => {
     const initialData = Array(15)
       .fill(null)
@@ -345,10 +315,6 @@ const SurveillanceInterface = () => {
       setDevices(videoDevices);
     } catch (err) {
       console.error("Error fetching cameras:", err);
-      setDebugInfo((prev) => ({
-        ...prev,
-        error: "Camera fetch error: " + err,
-      }));
     }
   };
 
@@ -356,33 +322,31 @@ const SurveillanceInterface = () => {
     fetchCameras();
   }, []);
 
-  const startVideo = () => {
-    try {
-      socket.current = io(`${SERVER_URL}`, {
-        reconnection: true,
-        reconnectionAttempts: 5,
-        timeout: 10000,
-      });
+  useEffect(() => {
+    const startVideo = () => {
+      try {
+        socket.current = io(`${SERVER_URL}`, {
+          reconnection: true,
+          reconnectionAttempts: 5,
+          timeout: 10000,
+        });
 
-      socket.current.on("connect", () => {
-        console.log("Socket connected successfully");
-        socket.current.emit("start_video", { camera_index: selectedCamera });
-      });
+        socket.current.on("connect", () => {
+          console.log("Socket connected successfully");
+          setDebugInfo((prev) => ({ ...prev, socketStatus: "connected" }));
+          socket.current?.emit("start_video", { camera_index: selectedCamera });
+        });
 
-      socket.current.on("connect_error", (error: any) => {
-        console.error("Socket connection error:", error);
-        setDebugInfo((prev) => ({
-          ...prev,
-          error: "Connection error: " + error,
-        }));
-      });
+        socket.current.on("connect_error", (socketError: Error) => {
+          console.error("Socket connection error:", socketError);
+          setDebugInfo((prev) => ({
+            ...prev,
+            socketStatus: "error",
+            lastError: `Socket error: ${socketError.message}`,
+          }));
+        });
 
-      socket.current.on(
-        "video_frame",
-        (data: {
-          entrance_frame: string;
-          entrance_detections: Detection[];
-        }) => {
+        socket.current.on("video_frame", (data: VideoFrameData) => {
           if (!data) {
             console.error("No data received");
             return;
@@ -400,13 +364,29 @@ const SurveillanceInterface = () => {
                 current.confidence > prev.confidence ? current : prev
             );
 
-            console.log("Detected OCR Text:", mostConfidentDetection.ocr_text);
+            console.log("Detected Vehicle:", mostConfidentDetection.label);
+            console.log("Detected Plates:", mostConfidentDetection.plates);
+            console.log(
+              "Detected Color:",
+              mostConfidentDetection.color_annotation
+            );
+
+            console.log(
+              "Detected OCR Text:",
+              mostConfidentDetection.plates.map((plate) => plate.ocr_text)
+            );
 
             setEntryDetectionData({
               vehicleType: determineVehicleType(mostConfidentDetection.label),
-              plateNumber: mostConfidentDetection.ocr_text || "NFP 8793",
+              plateNumber:
+                mostConfidentDetection.plates
+                  .map((plate) => plate.label)
+                  .join(", ") || "Unknown Plate",
               colorAnnotation: mostConfidentDetection.color_annotation,
-              ocrText: mostConfidentDetection.ocr_text,
+              ocrText:
+                mostConfidentDetection.plates
+                  .map((plate) => plate.ocr_text)
+                  .join(", ") || "",
               annotationLabel: parseInt(mostConfidentDetection.label),
             });
           } else {
@@ -418,27 +398,25 @@ const SurveillanceInterface = () => {
               annotationLabel: 0,
             });
           }
+        });
 
-          setDebugInfo((prev) => ({ ...prev, receivedFrame: true }));
-        }
-      );
+        socket.current.on("video_error", (data: { error: string }) => {
+          console.error("Video error:", data.error);
+          stopVideo();
+        });
+      } catch (error) {
+        console.error("Error in startVideo:", error);
+      }
+    };
 
-      socket.current.on("video_error", (data: { error: string }) => {
-        console.error("Video error:", data.error);
-        setDebugInfo((prev) => ({
-          ...prev,
-          error: "Video error: " + data.error,
-        }));
-        stopVideo();
-      });
-    } catch (error) {
-      console.error("Error in startVideo:", error);
-      setDebugInfo((prev) => ({
-        ...prev,
-        error: "Start video error: " + error,
-      }));
-    }
-  };
+    startVideo();
+
+    // Clean up function
+    return () => {
+      console.log("Cleaning up video connection...");
+      stopVideo();
+    };
+  }, [selectedCamera, SERVER_URL]);
 
   const stopVideo = () => {
     if (socket.current) {
@@ -450,17 +428,13 @@ const SurveillanceInterface = () => {
       entryVideoRef.current.src = "";
     }
     setEnabled(false);
-    setDebugInfo({
-      lastDetection: null,
-      receivedFrame: false,
-      error: "",
-    });
   };
 
   return (
     <div className="min-h-screen bg-white p-8">
       <div className="max-w-[90%] mx-auto space-y-6">
         <h1 className="text-2xl font-bold">Detect Vehicles</h1>
+
         <div className="flex items-center gap-4 mb-4">
           <Select value={selectedCamera} onValueChange={setSelectedCamera}>
             <SelectTrigger className="w-[200px]">
@@ -483,7 +457,6 @@ const SurveillanceInterface = () => {
                 stopVideo();
               } else {
                 setEnabled(true);
-                startVideo();
               }
             }}
           >
@@ -497,59 +470,28 @@ const SurveillanceInterface = () => {
               </>
             )}
           </Button>
+
+          <span className="text-xs text-gray-500">
+            Socket: {debugInfo.socketStatus}
+          </span>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Entry Video Stream */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Entry Stream</CardTitle>
-            </CardHeader>
-            <CardContent className="relative w-full h-[600px] bg-gray-50 rounded-lg overflow-hidden">
-              <img
-                ref={entryVideoRef}
-                alt="Camera Stream"
-                className="w-full h-full object-contain"
-              />
-            </CardContent>
-          </Card>
+        {/* Entry Video Stream - Larger, Full Width */}
+        <Card className="w-full">
+          <CardHeader>
+            <CardTitle>Entry Stream</CardTitle>
+          </CardHeader>
+          <CardContent className="relative w-full h-[700px] bg-gray-50 rounded-lg overflow-hidden">
+            <img
+              ref={entryVideoRef}
+              alt="Camera Stream"
+              className="w-full h-full object-contain"
+            />
+          </CardContent>
+        </Card>
 
-          {/* Parking Slots */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Parking Slots</CardTitle>
-            </CardHeader>
-            <CardContent className="p-6">
-              <div className="grid grid-cols-5 gap-4">
-                {parkingData.map((slot) => (
-                  <ParkingSlot
-                    key={slot.id}
-                    id={slot.id}
-                    status={slot.status}
-                  />
-                ))}
-              </div>
-
-              {/* Legend Section */}
-              <div className="mt-6 flex items-center justify-center space-x-4">
-                <div className="flex items-center space-x-2">
-                  <div className="w-4 h-4 bg-green-200 border-2 border-green-500 rounded-sm"></div>
-                  <span className="text-sm text-gray-600">Vacant</span>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <div className="w-4 h-4 bg-red-200 border-2 border-red-500 rounded-sm"></div>
-                  <span className="text-sm text-gray-600">Occupied</span>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <div className="w-4 h-4 bg-yellow-200 border-2 border-yellow-500 rounded-sm"></div>
-                  <span className="text-sm text-gray-600">Reserved</span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
         {/* Statistics Cards (Entry Detections) */}
-        <div className="grid grid-cols-3 gap-4 mt-[100px]">
+        <div className="grid grid-cols-3 gap-4 mt-6">
           {/* Entry Detection Cards */}
           <Card className="col-span-1">
             <CardContent className="pt-4 pb-4">
@@ -567,9 +509,7 @@ const SurveillanceInterface = () => {
               <p className="text-xs font-medium text-gray-500">
                 Entry/Exit Plate Number
               </p>
-              <p className="text-lg font-bold">
-                {entryDetectionData.plateNumber}
-              </p>
+              <p className="text-lg font-bold">{entryDetectionData.ocrText}</p>
             </CardContent>
           </Card>
 
@@ -596,42 +536,28 @@ const SurveillanceInterface = () => {
             </CardContent>
           </Card>
         </div>
-        {/* Parking Statistics Cards */}
-        <div className="grid grid-cols-4 gap-4">
-          <Card className="col-span-1">
-            <CardContent className="pt-4 pb-4 text-center">
-              <p className="text-xs text-gray-500">Available</p>
-              <p className="text-lg font-bold">{vacantSpaces}</p>
-              <p className="text-xs text-gray-500">empty slots</p>
-            </CardContent>
-          </Card>
 
-          <Card className="col-span-1">
-            <CardContent className="pt-4 pb-4 text-center">
-              <p className="text-xs text-gray-500">Reserved</p>
-              <p className="text-lg font-bold">{reservedSpaces}</p>
-              <p className="text-xs text-gray-500">reserved slots</p>
-            </CardContent>
-          </Card>
+        <UnassignedVehiclesTable />
 
-          <Card className="col-span-1">
-            <CardContent className="pt-4 pb-4 text-center">
-              <p className="text-xs text-gray-500">Occupied</p>
-              <p className="text-lg font-bold">{occupiedSpaces}</p>
-              <p className="text-xs text-gray-500">in use</p>
-            </CardContent>
-          </Card>
-
-          <Card className="col-span-1">
-            <CardContent className="pt-4 pb-4 text-center">
-              <p className="text-xs text-gray-500">Status</p>
-              <p className="text-lg font-bold">{capacityStatus}</p>
-              <p className="text-xs text-gray-500">
-                {Math.round((occupiedSpaces / totalSpaces) * 100)}% occupied
-              </p>
-            </CardContent>
-          </Card>
-        </div>
+        {/* Parking Slots Section - Now Full Width below entry stream */}
+        <Card className="w-full mt-6">
+          <CardHeader>
+            <CardTitle>Parking Slots Overview</CardTitle>
+          </CardHeader>
+          <CardContent className="p-6">
+            <div className="flex flex-col space-y-6">
+              {/* Parking Slots Visual Component */}
+              <ParkingSlotsComponent
+                parkingData={parkingData}
+                totalSpaces={totalSpaces}
+                occupiedSpaces={occupiedSpaces}
+                reservedSpaces={reservedSpaces}
+                vacantSpaces={vacantSpaces}
+                capacityStatus={capacityStatus}
+              />
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
