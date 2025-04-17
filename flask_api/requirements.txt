@@ -1,5 +1,5 @@
 #install flask
-
+cmake
 flask
 flask-sqlalchemy
 flask-migrate

@@ -1,16 +1,35 @@
+import uuid
 import cv2
 import base64
 import time
 import numpy as np
 from paddleocr import PaddleOCR
 from flask_socketio import SocketIO, emit
+import supabase
 from ultralytics import YOLO
 from datetime import datetime
 from threading import Thread
 from queue import Queue
+from collections import defaultdict
+import re
+from datetime import datetime
+import os
+import base64
+import uuid
+import cv2
+from dotenv import load_dotenv
+from datetime import datetime
+from supabase import create_client, Client
+
+from flask import Flask, request, render_template_string
+load_dotenv()
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 class VideoProcessor:
-    def __init__(self, socketio, video_path, model_path="./sample/best.pt", plate_model_path="./plates/best.pt"):
+    def __init__(self, socketio, video_path, model_path="yolov8n.pt", plate_model_path="./plates/best.pt"):
         self.socketio = socketio
         self.video_path = video_path
         self.model = YOLO(model_path)  # Vehicle detection model
@@ -22,37 +41,42 @@ class VideoProcessor:
         self.producer_thread = None
         self.processor_thread = None
         self.emit_thread = None
-        # Simplified PaddleOCR initialization for ANPR
-        self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
+        self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=True)
+        
+        # Tracking variables
+        self.line_x = 250  # Line position for counting
+        self.crossed_ids = set()  # Track IDs that have crossed the line
+        self.class_counts = defaultdict(int)  # Count of objects by class
+        self.detection_history = {}  # Store detection history for each track ID
+        self.plate_read_ids = set()
+        self.plates_detected_ids = set()
+        self.plate_buffer = {}  
 
-    def log_detection(self, label, confidence, ocr_text):
+        self.plate_buffer = {}
+        self.crossed_ids = set()
+        self.detection_history = {}
+        self.logged_lost_ids = set()
+
+    def log_detection(self, label, confidence, ocr_text, track_id=None):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         if ocr_text:
-            print(f"[{timestamp}] DETECTED: {label} | Conf: {confidence:.2f} | Plate: {ocr_text}")
+            print(f"[{timestamp}] ID:{track_id} | DETECTED: {label} | Conf: {confidence:.2f} | Plate: {ocr_text}")
         else:
-            print(f"[{timestamp}] DETECTED: {label} | Conf: {confidence:.2f} | No text found")
+            print(f"[{timestamp}] ID:{track_id} | DETECTED: {label} | Conf: {confidence:.2f}")
 
     def extract_text_from_roi(self, image, box):
-        """
-        Extract text from the ROI defined by the bounding box.
-        """
         try:
             if not box or len(box[0]) != 4:
                 return ""
             x1, y1, x2, y2 = map(int, box[0])
             
-            # Extract ROI directly from image
             roi = image[y1:y2, x1:x2]
-            
-            # Basic image preprocessing
             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
             thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                         cv2.THRESH_BINARY, 11, 2)
             
-            # Run OCR on the processed image
             ocr_result = self.ocr.ocr(thresh, cls=True)
             
-            # Process OCR results similar to detect.py
             if ocr_result and len(ocr_result) > 0:
                 text = " ".join([line[1][0] for line in ocr_result[0] if line and len(line) > 1])
                 return text.strip()
@@ -61,70 +85,248 @@ class VideoProcessor:
         except Exception as e:
             print(f"OCR Error: {e}")
             return ""
+    
+    @staticmethod
+    def is_valid_plate_format(plate_text):
+        return re.fullmatch(r"[A-Z]{3} \d{4}", plate_text.strip()) is not None
+    
+    @staticmethod
+    def upload_vehicle_entry(plate_text, plate_confidence, entry_time, screenshot_frame,timestamp_str):
+        try:
+            # Save screenshot to temp PNG file
+            _, buffer = cv2.imencode(".png", screenshot_frame)
+            image_bytes = buffer.tobytes()
+            filename = f"{uuid.uuid4()}.png"
+
+            # Upload to Supabase Storage
+            response = supabase.storage.from_("entry").upload(
+                path=filename,
+                file=image_bytes,
+                file_options={"content-type": "image/png"}
+            )
+
+            if hasattr(response, "error") and response.error:
+                print(f"❌ Supabase upload error: {response.error.message}")
+                return
+
+            public_url = f"{SUPABASE_URL}/storage/v1/object/public/entry/{filename}"
+            print(f"✅ Screenshot uploaded: {public_url}")
+
+            # Insert record into database
+            data = {
+                "entry_time": entry_time,
+                "image_url": public_url,
+                "plate_number": plate_text,
+                
+
+
+                # "registered", "parking_lot", "guard_id", "user_id" are skipped for now
+            }
+
+            insert_response = supabase.table("vehicle_entries").insert(data).execute()
+            if hasattr(insert_response, "error") and insert_response.error:
+                print(f"❌ Database insert error: {insert_response.error.message}")
+            else:
+                print("✅ Entry inserted into database")
+
+        except Exception as e:
+            print(f"❌ Exception in upload_vehicle_entry: {e}")
+
 
     def process_frame(self, frame, size=(640, 480)):
-        # Resize the frame to 640x480
+        print("test_process_1")
         frame = cv2.resize(frame, size)
-        results = self.model(frame, conf=0.5, iou=0.5)  # Vehicle detection
+        original_frame = frame.copy()  # Clean version for screenshot
+
+        results = self.model.track(frame, persist=True, conf=0.5, iou=0.5)
         detections = []
-        for box in results[0].boxes:
-            coords = box.xyxy.cpu().numpy().tolist()[0]
-            label = self.model.names[int(box.cls)]
-            confidence = float(box.conf)
-            x1, y1, x2, y2 = map(int, coords)
-            roi = frame[y1:y2, x1:x2]
 
-            # Plate detection within the vehicle ROI
-            plate_results = self.plate_model(roi, conf=0.5, iou=0.5)
-            plate_detections = []
-            for plate_box in plate_results[0].boxes:
-                plate_coords = plate_box.xyxy.cpu().numpy().tolist()[0]
-                plate_confidence = float(plate_box.conf)
-                px1, py1, px2, py2 = map(int, plate_coords)
-                plate_roi = roi[py1:py2, px1:px2]
+        target_classes = {'car', 'motorcycle', 'bike', 'bicycle'}
+        plate_line_x = 120  # Detection boundary
 
-                # Temporarily comment out OCR
-                plate_text = self.extract_text_from_roi(roi, [[px1, py1, px2, py2]])
-                # plate_text = ""  # Placeholder for OCR text
-                self.log_detection("Plate", plate_confidence, plate_text)
+        # Draw plate detection boundary
+        cv2.line(frame, (plate_line_x, 0), (plate_line_x, frame.shape[0]), (0, 255, 0), 2)
+        cv2.putText(frame, "Plate Detection Boundary", (plate_line_x + 10, 60), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-                plate_detections.append({
-                    "label": "Plate",
-                    "confidence": plate_confidence,
-                    "coordinates": [px1, py1, px2, py2],
-                    "ocr_text": plate_text,
+        current_ids = set()
+
+        if results[0].boxes.id is not None:
+            boxes = results[0].boxes.xyxy.cpu().numpy()
+            track_ids = results[0].boxes.id.int().cpu().tolist()
+            confidences = results[0].boxes.conf.cpu().numpy()
+            class_indices = results[0].boxes.cls.int().cpu().tolist()
+
+            filtered_boxes = []
+            filtered_track_ids = []
+            filtered_confidences = []
+            filtered_class_indices = []
+
+            for box, track_id, confidence, class_idx in zip(boxes, track_ids, confidences, class_indices):
+                label = self.model.names[int(class_idx)].lower()
+                if label in target_classes:
+                    filtered_boxes.append(box)
+                    filtered_track_ids.append(track_id)
+                    filtered_confidences.append(confidence)
+                    filtered_class_indices.append(class_idx)
+                    current_ids.add(track_id)
+
+            for box, track_id, confidence, class_idx in zip(filtered_boxes, filtered_track_ids, filtered_confidences, filtered_class_indices):
+                label = self.model.names[int(class_idx)]
+                x1, y1, x2, y2 = map(int, box)
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
+
+                # Draw object center and ID
+                cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
+                cv2.putText(frame, f"ID:{track_id}", (x1, y1-10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+
+                # Plate detection
+                if x1 < plate_line_x:
+                    roi = frame[y1:y2, x1:x2]
+                    plate_results = self.plate_model(roi, conf=0.5)
+
+                    if hasattr(plate_results[0], 'boxes') and plate_results[0].boxes is not None:
+                        for plate_box in plate_results[0].boxes:
+                            plate_conf = float(plate_box.conf)
+                            if plate_conf < 0.5:
+                                continue
+
+                            plate_coords = plate_box.xyxy.cpu().numpy().tolist()[0]
+                            px1, py1, px2, py2 = map(int, plate_coords)
+                            plate_roi = roi[py1:py2, px1:px2]
+                            plate_text = self.extract_text_from_roi(plate_roi, [[0, 0, px2-px1, py2-py1]])
+
+                            if plate_text.strip() == "":
+                                continue
+
+                            new_plate = {
+                                "label": "Plate",
+                                "confidence": plate_conf,
+                                "coordinates": [px1+x1, py1+y1, px2+x1, py2+y1],
+                                "ocr_text": plate_text.strip()
+                            }
+
+                            old_plate = self.plate_buffer.get(track_id)
+                            if (old_plate is None or plate_conf > old_plate["confidence"]) and self.is_valid_plate_format(plate_text):
+                                self.plate_buffer[track_id] = new_plate
+
+                            self.log_detection("Plate", plate_conf, plate_text, track_id)
+
+                # Color detection
+                roi = frame[y1:y2, x1:x2]
+                hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+                mean_hsv = cv2.mean(hsv_roi)[:3]
+                mean_hsv_uint8 = np.array([[mean_hsv]], dtype=np.uint8)
+                mean_bgr = cv2.cvtColor(mean_hsv_uint8, cv2.COLOR_HSV2BGR)[0][0]
+                hex_color = '#{:02x}{:02x}{:02x}'.format(int(mean_bgr[2]), int(mean_bgr[1]), int(mean_bgr[0]))
+
+                # Check if crossed
+                if x1 < plate_line_x and track_id not in self.crossed_ids:
+                    self.crossed_ids.add(track_id)
+                    self.class_counts[label] += 1
+
+                    best_plate = self.plate_buffer.get(track_id)
+                    timestamp = datetime.now()
+                    timestamp_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+
+                    if best_plate and self.is_valid_plate_format(best_plate["ocr_text"]):
+                        print(f"Vehicle {track_id} ({label}) crossed boundary at {timestamp_str}")
+                        print(f"  ↳ Best Plate: {best_plate['ocr_text']} (Conf: {best_plate['confidence']:.2f})")
+                    else:
+                        print(f"Vehicle {track_id} ({label}) crossed boundary at {timestamp_str}")
+                        print(f"  ↳ No valid plate found for ID {track_id}")
+
+                    self.detection_history[track_id] = {
+                        "label": label,
+                        "confidence": float(confidence),
+                        "plate_text": best_plate["ocr_text"] if best_plate else "",
+                        "plate_confidence": best_plate["confidence"] if best_plate else 0,
+                        "timestamp": timestamp,
+                        "color": hex_color,
+                        "screenshot": original_frame.copy()  # Save clean screenshot here
+                    }
+
+                detections.append({
+                    "label": label,
+                    "color_annotation": hex_color,
+                    "confidence": float(confidence),
+                    "coordinates": [x1, y1, x2, y2],
+                    "plates": [self.plate_buffer[track_id]] if track_id in self.plate_buffer else None,
+                    "best_plate": self.plate_buffer[track_id] if track_id in self.plate_buffer else None
                 })
 
-            # Calculate the mean BGR color for the vehicle ROI
-            hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-            mean_hsv = cv2.mean(hsv_roi)[:3]
-            mean_hsv_uint8 = np.array([[mean_hsv]], dtype=np.uint8)
-            mean_bgr = cv2.cvtColor(mean_hsv_uint8, cv2.COLOR_HSV2BGR)[0][0]
-            hex_color = '#{:02x}{:02x}{:02x}'.format(int(mean_bgr[2]), int(mean_bgr[1]), int(mean_bgr[0]))
+        # Print out lost vehicle info
+        lost_ids = self.crossed_ids - current_ids
+        for lost_id in lost_ids:
+            if lost_id not in self.logged_lost_ids:
+                info = self.detection_history.get(lost_id)
+                if info:
+                    time_since_crossed = (datetime.now() - info["timestamp"]).total_seconds()
+                    if time_since_crossed >= 2:
+                        print(f"Vehicle ID {lost_id} left view.")
+                        print(f"  ↳ Plate: {info['plate_text']} (Conf: {info['plate_confidence']:.2f})")
+                        print(f"  ↳ Timestamp: {info['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
 
-            # Log vehicle detection
-            self.log_detection(label, confidence, "")
+                        best_plate = self.plate_buffer.get(lost_id)
+                        if best_plate and self.is_valid_plate_format(best_plate["ocr_text"]):
+                            timestamp_str = info['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+                            try:
+                                self.upload_vehicle_entry(
+                                    plate_text=best_plate["ocr_text"],
+                                    plate_confidence=best_plate["confidence"],
+                                    entry_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
+                                    timestamp_str=timestamp_str,
+                                    screenshot_frame=info['screenshot']
+                                )
+                                # ✅ Clean up after successful upload
+                                self.detection_history.pop(lost_id, None)
+                                self.plate_buffer.pop(lost_id, None)
+                                self.crossed_ids.discard(lost_id)
+                                self.logged_lost_ids.add(lost_id)
 
-            detections.append({
-                "label": label,
-                "color_annotation": hex_color,  # Include color annotation
-                "confidence": confidence,
-                "coordinates": coords,
-                "plates": plate_detections,  # Include plate detections
-            })
-        annotated_frame = results[0].plot()
+                            except Exception as e:
+                                print(f"Exception in upload_vehicle_entry: {e}")
+
+                self.logged_lost_ids.add(lost_id)
+
+        # Annotate frame
+        annotated_frame = frame.copy()
+        for box, track_id, confidence, class_idx in zip(filtered_boxes, filtered_track_ids, filtered_confidences, filtered_class_indices):
+            x1, y1, x2, y2 = map(int, box)
+            label = self.model.names[int(class_idx)]
+            cx = (x1 + x2) // 2
+            cy = (y1 + y2) // 2
+
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(annotated_frame, f"{label} {confidence:.2f}", (x1, y1-10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+            cv2.circle(annotated_frame, (cx, cy), 4, (0, 255, 0), -1)
+            cv2.putText(annotated_frame, f"ID:{track_id}", (x1, y1-30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+
+        # Redraw line
+        cv2.line(annotated_frame, (plate_line_x, 0), (plate_line_x, frame.shape[0]), (0, 255, 0), 2)
+        cv2.putText(annotated_frame, "Plate Detection Boundary", (plate_line_x + 10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
         return annotated_frame, detections
 
+    
+    
+    
     def frame_producer(self, cap):
         fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_delay = 1.0 / fps if fps > 0 else 0.033  # fallback delay if FPS is unavailable
+        frame_delay = 1.0 / fps if fps > 0 else 0.033
         while self.running:
             ret, frame = cap.read()
             if not ret:
                 break
             while self.frame_queue.full() and self.running:
                 time.sleep(0.01)
-            self.frame_queue.put(frame)
+            if not self.frame_queue.full():
+                self.frame_queue.put(frame)
             time.sleep(frame_delay)
 
     def frame_processor(self):
@@ -139,7 +341,8 @@ class VideoProcessor:
             frame_data = base64.b64encode(buffer).decode('utf-8')
             self.result_queue.put({
                 "frame_data": frame_data,
-                "detections": detections
+                "detections": detections,
+                "counts": dict(self.class_counts)
             })
 
     def emit_frames(self):
@@ -153,23 +356,23 @@ class VideoProcessor:
             frame_count += 1
             elapsed_time = time.time() - start_time
             fps = frame_count / elapsed_time if elapsed_time > 0 else 0
+            
             self.socketio.emit("video_frame", {
                 "entrance_frame": result["frame_data"],
                 "entrance_detections": result["detections"],
+                "counts": result["counts"],
                 "fps": fps
             })
+            
             if frame_count % 30 == 0:
                 print(f"Processing FPS: {fps:.2f}")
                 if frame_count > 100:
                     start_time = time.time()
                     frame_count = 0
-        if self.video_capture:
-            self.video_capture.release()
-            print("Video stream stopped.")
 
     def start(self):
         if self.running:
-            return  # Already running
+            return
         self.running = True
         self.video_capture = cv2.VideoCapture(self.video_path)
         if not self.video_capture.isOpened():
@@ -192,4 +395,12 @@ class VideoProcessor:
         if not self.running:
             return
         self.running = False
-        print("Stopping video processing.")
+        if self.video_capture:
+            self.video_capture.release()
+        print("Video processing stopped.")
+        print("Final counts:", dict(self.class_counts))
+        print("Detection history:", self.detection_history)
+
+
+
+    
