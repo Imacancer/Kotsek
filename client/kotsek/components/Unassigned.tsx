@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Image from "next/image";
-import { format } from "date-fns";
 import { ChevronDown, ChevronUp, MoreHorizontal } from "lucide-react";
 
 import {
@@ -27,6 +26,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 // Define Vehicle type
 type Vehicle = {
@@ -36,56 +36,98 @@ type Vehicle = {
   type: string;
   plate: string;
   color: string;
-  date: Date;
+  date: string;
+  created_at: string;
 };
 
 export default function UnassignedVehiclesTable() {
-  // Sample data
-  const [vehicles, setVehicles] = useState<Vehicle[]>([
-    {
-      id: "1",
-      image: "/bike.png",
-      time: "08:30",
-      type: "Bike",
-      plate: "None",
-      color: "Blue",
-      date: new Date("2025-04-02"),
-    },
-    {
-      id: "2",
-      image: "/ducati.jpg",
-      time: "09:45",
-      type: "Motorcycle",
-      plate: "NIG645",
-      color: "Red",
-      date: new Date("2025-04-03"),
-    },
-    {
-      id: "3",
-      image: "/mustang.jpeg",
-      time: "10:15",
-      type: "Car",
-      plate: "ANA123",
-      color: "Black",
-      date: new Date("2025-04-05"),
-    },
-  ]);
-
-  // Form state for adding a new vehicle
-  const [newVehicle, setNewVehicle] = useState<
-    Omit<Vehicle, "id" | "date"> & { date: string }
-  >({
-    image: "",
-    time: "",
-    type: "",
-    plate: "",
-    color: "",
-    date: "",
-  });
+  // State for vehicles data
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Sorting state
   const [sortField, setSortField] = useState<keyof Vehicle | null>(null);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+
+  const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL;
+
+  // Fetch data from API
+  // Fetch data from API
+  // useEffect(() => {
+  //   const fetchVehicles = async () => {
+  //     try {
+  //       setLoading(true);
+  //       const response = await fetch(`${SERVER_URL}/api/unassigned-vehicles`);
+
+  //       // Check if response is OK before parsing JSON
+  //       if (!response.ok) {
+  //         const text = await response.text();
+  //         console.error("Server responded with:", response.status, text);
+  //         throw new Error(`Server responded with ${response.status}`);
+  //       }
+
+  //       const result = await response.json();
+
+  //       if (result.success) {
+  //         setVehicles(result.data);
+  //         setError(null);
+  //       } else {
+  //         setError(result.message || "Failed to fetch vehicles");
+  //         setVehicles([]);
+  //       }
+  //     } catch (err) {
+  //       setError("Failed to connect to the server");
+  //       console.error("Error fetching unassigned vehicles:", err);
+  //     } finally {
+  //       setLoading(false);
+  //     }
+  //   };
+
+  //   fetchVehicles();
+
+  //   // Optional: Set up polling to refresh data periodically
+  //   const intervalId = setInterval(fetchVehicles, 30000); // Refresh every 30 seconds
+
+  //   // Clean up interval on component unmount
+  //   return () => clearInterval(intervalId);
+  // }, [SERVER_URL]); // Include SERVER_URL in dependencies
+
+  useEffect(() => {
+    let eventSource: EventSource | null = null;
+
+    const setupSSE = () => {
+      setLoading(true);
+      eventSource = new EventSource(`${SERVER_URL}/api/unassigned-vehicles`);
+
+      eventSource.onmessage = (event) => {
+        const result = JSON.parse(event.data);
+        if (result.success) {
+          setVehicles(result.data);
+          setError(null);
+        } else {
+          setError(result.message || "Failed to fetch vehicles");
+        }
+        setLoading(false);
+      };
+
+      eventSource.onerror = () => {
+        setError("Connection to server lost. Reconnecting...");
+        eventSource?.close();
+        // Try to reconnect after a short delay
+        setTimeout(setupSSE, 5000);
+      };
+    };
+
+    setupSSE();
+
+    // Clean up on unmount
+    return () => {
+      if (eventSource) {
+        eventSource.close();
+      }
+    };
+  }, [SERVER_URL]);
 
   // Handle sort
   const handleSort = (field: keyof Vehicle) => {
@@ -108,25 +150,6 @@ export default function UnassignedVehiclesTable() {
     }
   });
 
-  // Handle form input changes
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setNewVehicle((prev) => ({ ...prev, [name]: value }));
-  };
-
-  // Handle form submission
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-
-    const vehicleToAdd: Vehicle = {
-      id: Date.now().toString(),
-      ...newVehicle,
-      date: new Date(newVehicle.date),
-    };
-
-    setVehicles((prev) => [...prev, vehicleToAdd]);
-  };
-
   // Define sort icon component
   const SortIcon = ({ field }: { field: keyof Vehicle }) => {
     if (sortField !== field) return null;
@@ -146,6 +169,12 @@ export default function UnassignedVehiclesTable() {
         </div>
       </CardHeader>
       <CardContent>
+        {error && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
         <div className="rounded-md border">
           <Table>
             <TableHeader>
@@ -200,7 +229,13 @@ export default function UnassignedVehiclesTable() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedVehicles.length > 0 ? (
+              {loading ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center py-6">
+                    Loading vehicles...
+                  </TableCell>
+                </TableRow>
+              ) : sortedVehicles.length > 0 ? (
                 sortedVehicles.map((vehicle) => (
                   <TableRow key={vehicle.id}>
                     <TableCell>
@@ -217,9 +252,17 @@ export default function UnassignedVehiclesTable() {
                     <TableCell className="font-medium">
                       {vehicle.plate}
                     </TableCell>
-                    <TableCell>{vehicle.color}</TableCell>
                     <TableCell>
-                      {format(vehicle.date, "MMM dd, yyyy")}
+                      <div className="flex items-center">
+                        <div
+                          className="w-4 h-4 rounded-full mr-2"
+                          style={{ backgroundColor: vehicle.color }}
+                        />
+                        {vehicle.color}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {new Date(vehicle.date).toLocaleDateString()}
                     </TableCell>
                     <TableCell>
                       <DropdownMenu>
@@ -240,14 +283,12 @@ export default function UnassignedVehiclesTable() {
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => {
-                              // Delete action
-                              setVehicles(
-                                vehicles.filter((v) => v.id !== vehicle.id)
-                              );
+                              // Assign to parking lot action
+                              console.log("Assign", vehicle.id);
+                              // Here you would typically open a modal to select a parking lot
                             }}
-                            className="text-red-600"
                           >
-                            Delete
+                            Assign to Parking Lot
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
@@ -260,7 +301,7 @@ export default function UnassignedVehiclesTable() {
                     colSpan={7}
                     className="text-center py-6 text-gray-500"
                   >
-                    No vehicles found
+                    No unassigned vehicles found
                   </TableCell>
                 </TableRow>
               )}

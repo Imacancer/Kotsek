@@ -17,6 +17,14 @@ import { useRouter } from "next/navigation";
 import axios from "axios";
 import ParkingSlotsComponent, { ParkingSlot } from "@/components/ParkingSlot";
 import UnassignedVehiclesTable from "@/components/Unassigned";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface MediaDeviceInfo {
   deviceId: string;
@@ -58,12 +66,50 @@ interface VideoFrameData {
   entrance_detections: Detection[];
 }
 
+interface Guard {
+  guard_id: string;
+  name: string;
+  contact: string;
+}
+
+interface SelectedSlot {
+  id: string;
+  slot_number: number;
+  section: string;
+  lot_id?: string;
+  status?: string;
+  current_vehicle_id?: string;
+}
+
+interface UnassignedVehicle {
+  id: string;
+  plate: string;
+  type: string;
+  color_annotation: string;
+  entry_time: string;
+  exit_time: string | null;
+}
+
 const SurveillanceInterface = () => {
   const entryVideoRef = useRef<HTMLImageElement | null>(null);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedCamera, setSelectedCamera] = useState<string>("0");
   const [enabled, setEnabled] = useState(false);
   const socket = useRef<Socket | null>(null);
+  const [guards, setGuards] = useState<Guard[]>([]);
+  const [selectedGuard, setSelectedGuard] = useState<string>("");
+  const [activeGuard, setActiveGuard] = useState<Guard | null>(null);
+  const [parkingDataLeft, setParkingDataLeft] = useState<ParkingSlot[]>([]);
+  const [parkingDataRight, setParkingDataRight] = useState<ParkingSlot[]>([]);
+  const [parkingDataCenter, setParkingDataCenter] = useState<ParkingSlot[]>([]);
+  const [parkingDataTop, setParkingDataTop] = useState<ParkingSlot[]>([]);
+  const [isSlotDialogOpen, setIsSlotDialogOpen] = useState(false);
+  const [selectedSlot, setSelectedSlot] = useState<SelectedSlot | null>(null);
+  const [unassignedVehicles, setUnassignedVehicles] = useState<
+    UnassignedVehicle[]
+  >([]);
+  const [selectedVehicle, setSelectedVehicle] = useState<string | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   const [debugInfo, setDebugInfo] = useState({
     lastError: "",
@@ -74,9 +120,6 @@ const SurveillanceInterface = () => {
 
   const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL;
 
-  // Parking monitoring state
-  const [parkingData, setParkingData] = useState<ParkingSlot[]>([]);
-
   const [entryDetectionData, setEntryDetectionData] =
     useState<EntryDetectionData>({
       vehicleType: "",
@@ -86,12 +129,329 @@ const SurveillanceInterface = () => {
       annotationLabel: 0,
     });
 
-  // Calculate parking summary statistics
-  const totalSpaces = parkingData.length;
-  const occupiedSpaces = parkingData.filter(
+  const fetchGuards = async () => {
+    try {
+      const response = await axios.get(`${SERVER_URL}/guard/guards`);
+      setGuards(response.data);
+    } catch (error) {
+      console.error("Error fetching guards:", error);
+      toast.error("Failed to load guards");
+    }
+  };
+
+  const getActiveGuard = async () => {
+    try {
+      const response = await axios.get(`${SERVER_URL}/guard/active-guard`);
+      if (response.data.active_guard) {
+        setActiveGuard(response.data.active_guard);
+        setSelectedGuard(response.data.active_guard.id);
+      }
+    } catch (error) {
+      console.error("Error fetching active guard:", error);
+    }
+  };
+
+  // Add a function to set the active guard
+  const handleSetActiveGuard = async () => {
+    try {
+      const response = await axios.post(
+        `${SERVER_URL}/guard/set-active-guard`,
+        {
+          guard_id: selectedGuard || null,
+        }
+      );
+
+      if (response.data.success) {
+        setActiveGuard(response.data.active_guard);
+        toast.success(response.data.message);
+      } else {
+        toast.error("Failed to set active guard");
+      }
+    } catch (error) {
+      console.error("Error setting active guard:", error);
+      toast.error("Failed to set active guard");
+    }
+  };
+
+  // Add this to your existing useEffect hooks
+  useEffect(() => {
+    fetchGuards();
+    getActiveGuard();
+  }, [SERVER_URL]);
+
+  const fetchParkingData = async () => {
+    try {
+      const response = await axios.get(
+        `${SERVER_URL}/parking/get-parking-status`
+      );
+
+      if (response.data && response.data.success) {
+        const data = response.data.data;
+        const parkingSlots = data?.parking_slots || {};
+
+        // Transform data for each section
+        // In the fetchParkingData function, update the data transformations to include current_vehicle_id
+        setParkingDataLeft(
+          parkingSlots.left.map((slot: ParkingSlot) => ({
+            id: slot.id,
+            slot_number: slot.slot_number,
+            lot_id: slot.lot_id,
+            status: slot.status,
+            plate_number: slot.plate_number || undefined,
+            current_vehicle_id: slot.current_vehicle_id || undefined,
+          }))
+        );
+
+        setParkingDataRight(
+          parkingSlots.right.map((slot: ParkingSlot) => ({
+            id: slot.id,
+            slot_number: slot.slot_number,
+            lot_id: slot.lot_id,
+            status: slot.status,
+            plate_number: slot.plate_number || undefined,
+            current_vehicle_id: slot.current_vehicle_id || undefined,
+          }))
+        );
+
+        setParkingDataCenter(
+          parkingSlots.center.map((slot: ParkingSlot) => ({
+            id: slot.id,
+            slot_number: slot.slot_number,
+            lot_id: slot.lot_id,
+            status: slot.status,
+            plate_number: slot.plate_number || undefined,
+            current_vehicle_id: slot.current_vehicle_id || undefined,
+          }))
+        );
+
+        setParkingDataTop(
+          parkingSlots.top.map((slot: ParkingSlot) => ({
+            id: slot.id,
+            slot_number: slot.slot_number,
+            lot_id: slot.lot_id,
+            status: slot.status,
+            plate_number: slot.plate_number || undefined,
+            current_vehicle_id: slot.current_vehicle_id || undefined,
+          }))
+        );
+      }
+    } catch (error) {
+      console.error("Error fetching parking data:", error);
+      toast.error("Failed to load parking data");
+    }
+  };
+
+  const fetchUnassignedVehicles = () => {
+    // Clean up any existing EventSource
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
+    try {
+      // Create a new EventSource connection
+      const eventSource = new EventSource(
+        `${SERVER_URL}/api/unassigned-vehicles`
+      );
+      eventSourceRef.current = eventSource;
+
+      // Handle incoming messages
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.success) {
+          setUnassignedVehicles(data.data);
+        } else {
+          console.error("Error in SSE data:", data.error);
+          toast.error("Failed to load unassigned vehicles");
+        }
+      };
+
+      // Handle errors
+      eventSource.onerror = (error) => {
+        console.error("EventSource error:", error);
+        eventSource.close();
+        eventSourceRef.current = null;
+        toast.error(
+          "Connection to unassigned vehicles feed lost. Reconnecting..."
+        );
+
+        // Attempt to reconnect after a delay
+        setTimeout(() => fetchUnassignedVehicles(), 5000);
+      };
+    } catch (error) {
+      console.error("Error setting up EventSource:", error);
+      toast.error("Failed to connect to unassigned vehicles feed");
+    }
+  };
+
+  useEffect(() => {
+    fetchParkingData();
+    fetchUnassignedVehicles();
+
+    // Clean up function to close EventSource connection when component unmounts
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+    };
+  }, [SERVER_URL]);
+
+  // Handle slot click
+  // Update the handleSlotClick function
+  const handleSlotClick = (
+    id: string,
+    slot_number: number,
+    section: string,
+    lot_id?: string,
+    status?: string,
+    current_vehicle_id?: string
+  ) => {
+    const slotData = {
+      id,
+      slot_number,
+      section,
+      lot_id,
+      status: status || "available",
+      current_vehicle_id,
+    };
+
+    console.log("Selected Slot Data:", slotData);
+    console.log("Selected Slot JSON:", JSON.stringify(slotData, null, 2));
+
+    setSelectedSlot(slotData);
+    setIsSlotDialogOpen(true);
+
+    // Only reset selected vehicle if we're going to assign a new one
+    if (status === "available" || !current_vehicle_id) {
+      setSelectedVehicle(null);
+    }
+  };
+
+  // Update the assignParkingSlot function to handle different section types
+  // Update assignParkingSlot function
+  const assignParkingSlot = async () => {
+    if (!selectedSlot || !selectedVehicle) {
+      toast.error("Please select both a slot and a vehicle");
+      return;
+    }
+
+    try {
+      // Determine the lot number based on section and ID
+      let lotNumber = selectedSlot.lot_id || "";
+
+      if (!lotNumber) {
+        if (selectedSlot.section === "bike-left") {
+          lotNumber = "PE1_Bike";
+        } else if (selectedSlot.section === "bike-right") {
+          lotNumber = "PE2_Bike";
+        } else if (selectedSlot.section === "motor-lot") {
+          lotNumber = "Elevated_MCP";
+        } else if (selectedSlot.section === "top") {
+          lotNumber = `PE2_${selectedSlot.id}`;
+        } else if (selectedSlot.section === "left") {
+          lotNumber = `PE1_${selectedSlot.id}`;
+        } else if (selectedSlot.section === "right") {
+          lotNumber = `BLDG1_${selectedSlot.id}`;
+        } else if (selectedSlot.section === "center-upper") {
+          lotNumber = `CENTER1_${selectedSlot.id}`;
+        } else if (selectedSlot.section === "center-lower") {
+          lotNumber = `CENTER2_${selectedSlot.id}`;
+        } else {
+          lotNumber = `CENTER_${selectedSlot.id}`;
+        }
+      }
+
+      const response = await axios.post(`${SERVER_URL}/parking/assign-slot`, {
+        slot_id: selectedSlot.slot_number.toString(),
+        slot_section: selectedSlot.section,
+        entry_id: selectedVehicle,
+        lot_id: lotNumber,
+      });
+      console.log("Selected Slot ID:", selectedSlot.slot_number);
+      if (response.data && response.data.success) {
+        toast.success(response.data.message);
+        setIsSlotDialogOpen(false);
+
+        // Refresh data
+        fetchParkingData();
+        fetchUnassignedVehicles();
+      }
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        // Handle API errors
+      } else if (error instanceof Error) {
+        // Handle generic errors
+        toast.error(error.message);
+      } else {
+        // Handle unknown error types
+        toast.error("An unexpected error occurred");
+      }
+    }
+  };
+
+  // Update releaseParkingSlot function
+  const releaseParkingSlot = async () => {
+    if (!selectedSlot) {
+      toast.error("Invalid slot selected");
+      return;
+    }
+
+    // // Get the slot_id value (either from lot_id or selecting appropriately)
+    // const slotIdToRelease = selectedSlot.lot_id || selectedSlot.id.toString();
+
+    try {
+      const response = await axios.post(`${SERVER_URL}/parking/release-slot`, {
+        id: selectedSlot.id.toString(),
+        section: selectedSlot.section,
+      });
+
+      console.log("selectedSlot id:", selectedSlot.id);
+
+      if (response.data && response.data.success) {
+        toast.success(response.data.message);
+        setIsSlotDialogOpen(false);
+
+        // Refresh data
+        fetchParkingData();
+      }
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        // Handle API errors
+      } else if (error instanceof Error) {
+        // Handle generic errors
+        toast.error(error.message);
+      } else {
+        // Handle unknown error types
+        toast.error("An unexpected error occurred");
+      }
+    }
+  };
+
+  // Initialize data on component mount
+  useEffect(() => {
+    fetchParkingData();
+    fetchUnassignedVehicles();
+
+    // Set up polling for real-time updates
+    const interval = setInterval(() => {
+      fetchParkingData();
+      fetchUnassignedVehicles();
+    }, 30000); // Update every 30 seconds
+
+    return () => clearInterval(interval);
+  }, [SERVER_URL]);
+
+  const allParkingSlots = [
+    ...parkingDataLeft,
+    ...parkingDataRight,
+    ...parkingDataCenter,
+    ...parkingDataTop,
+  ];
+  const totalSpaces = allParkingSlots.length;
+  const occupiedSpaces = allParkingSlots.filter(
     (slot) => slot.status === "occupied"
   ).length;
-  const reservedSpaces = parkingData.filter(
+  const reservedSpaces = allParkingSlots.filter(
     (slot) => slot.status === "reserved"
   ).length;
   const vacantSpaces = totalSpaces - occupiedSpaces - reservedSpaces;
@@ -278,30 +638,17 @@ const SurveillanceInterface = () => {
     checkAuthentication();
   }, [router]);
 
-  const determineVehicleType = (label: string | number): string => {
-    const numericLabel = typeof label === "string" ? parseInt(label) : label;
+  // const determineVehicleType = (label: string | number): string => {
+  //   const numericLabel = typeof label === "string" ? parseInt(label) : label;
 
-    if (numericLabel === 5 || numericLabel === 15) {
-      return "Car";
-    } else if (numericLabel === 10) {
-      return "Motorcycle";
-    } else {
-      return "Bicycle";
-    }
-  };
-
-  // Initialize parking data
-  useEffect(() => {
-    const initialData = Array(15)
-      .fill(null)
-      .map((_, index) => ({
-        id: index + 1,
-        status: ["available", "occupied", "reserved"][
-          Math.floor(Math.random() * 3)
-        ] as "available" | "occupied" | "reserved",
-      }));
-    setParkingData(initialData);
-  }, []);
+  //   if (numericLabel === 2 || numericLabel === 15) {
+  //     return "Car";
+  //   } else if (numericLabel === 10) {
+  //     return "Motorcycle";
+  //   } else {
+  //     return "Bicycle";
+  //   }
+  // };
 
   const fetchCameras = async () => {
     try {
@@ -371,18 +718,20 @@ const SurveillanceInterface = () => {
               mostConfidentDetection.color_annotation
             );
 
-            console.log(
-              "Detected OCR Text:",
-              mostConfidentDetection.plates.map((plate) => plate.ocr_text)
-            );
+            // console.log(
+            //   "Detected OCR Text:",
+            //   mostConfidentDetection.plates.map((plate) => plate.ocr_text)
+            // );
+
+            const PlateNum =
+              mostConfidentDetection.plates
+                ?.map((plate) => plate.ocr_text)
+                .join(", ") || "";
 
             setEntryDetectionData({
-              vehicleType: determineVehicleType(mostConfidentDetection.label),
-              plateNumber:
-                mostConfidentDetection.plates
-                  .map((plate) => plate.label)
-                  .join(", ") || "Unknown Plate",
-              colorAnnotation: mostConfidentDetection.color_annotation,
+              vehicleType: mostConfidentDetection.label,
+              plateNumber: PlateNum,
+              colorAnnotation: mostConfidentDetection?.color_annotation,
               ocrText:
                 mostConfidentDetection.plates
                   .map((plate) => plate.ocr_text)
@@ -434,7 +783,6 @@ const SurveillanceInterface = () => {
     <div className="min-h-screen bg-white p-8">
       <div className="max-w-[90%] mx-auto space-y-6">
         <h1 className="text-2xl font-bold">Detect Vehicles</h1>
-
         <div className="flex items-center gap-4 mb-4">
           <Select value={selectedCamera} onValueChange={setSelectedCamera}>
             <SelectTrigger className="w-[200px]">
@@ -471,11 +819,36 @@ const SurveillanceInterface = () => {
             )}
           </Button>
 
+          <Select value={selectedGuard} onValueChange={setSelectedGuard}>
+            <SelectTrigger className="w-[200px]">
+              <SelectValue placeholder="Select Guard" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">No Guard</SelectItem>
+              {guards.map((guard) => (
+                <SelectItem key={guard.guard_id} value={guard.guard_id}>
+                  {guard.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {/* Add Button to Set Active Guard */}
+          <Button variant="outline" onClick={handleSetActiveGuard}>
+            Assign Guard
+          </Button>
+
+          {/* Active Guard Status */}
+          {activeGuard && (
+            <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">
+              Active Guard: {activeGuard.name}
+            </span>
+          )}
+
           <span className="text-xs text-gray-500">
             Socket: {debugInfo.socketStatus}
           </span>
         </div>
-
         {/* Entry Video Stream - Larger, Full Width */}
         <Card className="w-full">
           <CardHeader>
@@ -489,7 +862,6 @@ const SurveillanceInterface = () => {
             />
           </CardContent>
         </Card>
-
         {/* Statistics Cards (Entry Detections) */}
         <div className="grid grid-cols-3 gap-4 mt-6">
           {/* Entry Detection Cards */}
@@ -536,9 +908,7 @@ const SurveillanceInterface = () => {
             </CardContent>
           </Card>
         </div>
-
         <UnassignedVehiclesTable />
-
         {/* Parking Slots Section - Now Full Width below entry stream */}
         <Card className="w-full mt-6">
           <CardHeader>
@@ -548,16 +918,123 @@ const SurveillanceInterface = () => {
             <div className="flex flex-col space-y-6">
               {/* Parking Slots Visual Component */}
               <ParkingSlotsComponent
-                parkingData={parkingData}
+                parkingDataLeft={parkingDataLeft}
+                parkingDataRight={parkingDataRight}
+                parkingDataCenter={parkingDataCenter}
+                parkingDataTop={parkingDataTop}
                 totalSpaces={totalSpaces}
                 occupiedSpaces={occupiedSpaces}
                 reservedSpaces={reservedSpaces}
                 vacantSpaces={vacantSpaces}
                 capacityStatus={capacityStatus}
+                onSlotClick={handleSlotClick}
               />
             </div>
           </CardContent>
         </Card>
+        <Dialog open={isSlotDialogOpen} onOpenChange={setIsSlotDialogOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>
+                {selectedSlot?.section.includes("bike")
+                  ? `Manage Bike Area ${
+                      selectedSlot.section === "bike-left" ? "Left" : "Right"
+                    }`
+                  : selectedSlot?.section === "motor-lot"
+                  ? "Manage Motor Parking Lot"
+                  : `Manage Parking Slot ${selectedSlot?.section}-${selectedSlot?.id}`}
+              </DialogTitle>
+            </DialogHeader>
+
+            {selectedSlot && (
+              <div className="space-y-4 py-4">
+                {/* Check if the slot is occupied (has status "occupied" or has current_vehicle_id) */}
+                {selectedSlot.status === "occupied" ||
+                selectedSlot.current_vehicle_id ? (
+                  // Show release option for occupied slots
+                  <>
+                    <p>
+                      This{" "}
+                      {selectedSlot.section.includes("bike")
+                        ? "bike area"
+                        : selectedSlot.section === "motor-lot"
+                        ? "motor parking lot"
+                        : "parking slot"}{" "}
+                      is currently occupied.
+                    </p>
+                    <DialogFooter>
+                      <Button
+                        variant="outline"
+                        onClick={() => setIsSlotDialogOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        onClick={releaseParkingSlot}
+                      >
+                        Release Slot
+                      </Button>
+                    </DialogFooter>
+                  </>
+                ) : (
+                  // Show assignment options for available slots
+                  <Tabs defaultValue="assign">
+                    <TabsList className="grid w-full grid-cols-2">
+                      <TabsTrigger value="assign">Assign Vehicle</TabsTrigger>
+                      <TabsTrigger value="reserve">Reserve Slot</TabsTrigger>
+                    </TabsList>
+
+                    <TabsContent value="assign" className="space-y-4">
+                      <div className="space-y-2">
+                        <h3 className="text-sm font-medium">
+                          Select Unassigned Vehicle
+                        </h3>
+                        <select
+                          className="w-full p-2 border rounded"
+                          value={selectedVehicle || ""}
+                          onChange={(e) => setSelectedVehicle(e.target.value)}
+                        >
+                          <option value="">Select a vehicle</option>
+                          {unassignedVehicles.map((vehicle) => (
+                            <option key={vehicle.id} value={vehicle.id}>
+                              {vehicle.plate} - {vehicle.type}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <DialogFooter>
+                        <Button
+                          variant="outline"
+                          onClick={() => setIsSlotDialogOpen(false)}
+                        >
+                          Cancel
+                        </Button>
+                        <Button onClick={assignParkingSlot}>
+                          Assign Vehicle
+                        </Button>
+                      </DialogFooter>
+                    </TabsContent>
+
+                    <TabsContent value="reserve" className="space-y-4">
+                      <p>Reservation functionality not implemented yet.</p>
+
+                      <DialogFooter>
+                        <Button
+                          variant="outline"
+                          onClick={() => setIsSlotDialogOpen(false)}
+                        >
+                          Cancel
+                        </Button>
+                      </DialogFooter>
+                    </TabsContent>
+                  </Tabs>
+                )}
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );

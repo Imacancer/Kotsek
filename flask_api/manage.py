@@ -3,14 +3,26 @@ from flask_cors import CORS
 from flask_socketio import SocketIO
 from detection_service.detection import VideoProcessor
 from controllers.auth import auth_bp, init_jwt
+from controllers.unassigned import vehicle_bp
+from controllers.assign_guard import guard_bp
+from controllers.parking_lot import parking_bp
 import os 
 from dotenv import load_dotenv
 from db.db import init_db, db  # Import the init_db function and db instance
-from flask_migrate import Migrate  # Import Flask-Migrate
+#please before nyo start to migrate muna kayo ng models sa database search nyo na lang 2 command lang naman
+# 1 alembic revision --autogenerate -m "your commit message"
+# 2 alembic upgrade head
+
+## Optional commands for Alembic migrations
+# 3 alembic downgrade -1 // to rollback the last migration
+# 4 alembic history // to see the history of migration
+# 5 alembic stamp head // to stamp the current revision as the head without applying any changes
 
 load_dotenv()
 
+
 def create_app():
+    global video_processor
     app = Flask(__name__)
     app.secret_key = os.getenv('SECRET_KEY', 'FB27D156173716A31912F1BD6CEDB')
 
@@ -23,19 +35,34 @@ def create_app():
     
     # Register the auth blueprint
     app.register_blueprint(auth_bp)
+    app.register_blueprint(vehicle_bp)
+    app.register_blueprint(guard_bp)
+    app.register_blueprint(parking_bp)
 
     init_jwt(app)
 
     # Initialize the database and migrations
     init_db(app)              # This sets app.config['SQLALCHEMY_DATABASE_URI'] and initializes db
-    migrate = Migrate(app, db)  # Attaches Flask-Migrate to your app
+    # with app.app_context():
+    #     from db.initializers import run_all_initializers // i uncomment nyo to after nyo mag migrate
+    #     run_all_initializers()
 
     # Initialize SocketIO and any additional services
     socketio = SocketIO(app, ping_timeout=1, ping_interval=2, 
                         cors_allowed_origins="*", max_http_buffer_size=1e8)
 
     video_path = "./sample/mamamo.mov"  # Update path as necessary
-    video_processor = VideoProcessor(socketio, video_path)
+    video_processor = VideoProcessor(socketio, video_path)  # Local variable
+    app.video_processor = video_processor
+
+    app.set_active_guard = lambda guard_id: app.video_processor.set_active_guard(guard_id)
+    
+    # Add a property to get the active guard ID
+    @property
+    def active_guard_id(app):
+        return app.video_processor.active_guard_id
+    
+    app.active_guard_id = property(lambda app: app.video_processor.active_guard_id)
 
     @socketio.on("start_video")
     def handle_start_video(data):

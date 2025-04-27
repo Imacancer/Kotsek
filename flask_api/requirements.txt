@@ -19,4 +19,4 @@ flask-sqlalchemy
 paddleocr
 paddlepaddle
 psycopg2-binary
-
+alembic

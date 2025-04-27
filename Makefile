@@ -26,4 +26,4 @@ rebuild:
 	docker-compose up --build
 
 logs:
-	docker logs flask-messenger-api
+	docker logs -f $(SERVICE_NAME)

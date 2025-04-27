@@ -1,11 +1,12 @@
 from db.db import db
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
-
+from models.base import generate_uuid, PG_UUID
 class User(db.Model):
     __tablename__ = 'user_profiles'
+
     
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(PG_UUID(as_uuid=True), primary_key=True, default=generate_uuid)
     username = db.Column(db.String(80), unique=True, nullable=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(256))

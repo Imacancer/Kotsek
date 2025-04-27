@@ -12,29 +12,19 @@ from threading import Thread
 from queue import Queue
 from collections import defaultdict
 import re
+from datetime import datetime
 import os
 import base64
+import uuid
+import cv2
 from dotenv import load_dotenv
-from sqlalchemy.orm import Session
-from sqlalchemy import create_engine
-from db.db import db
+from datetime import datetime
 from supabase import create_client, Client
-
-# Import models
-from models.vehicle_entry import VehicleEntry
-from models.customer import ParkingCustomer
-from models.guards import Guard
-
-# Load environment variables
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-DATABASE_URL = os.getenv("DATABASE_URL")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-
-# For direct supabase storage uploads (keeping this for file storage)
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 class VideoProcessor:
     def __init__(self, socketio, video_path, model_path="yolov8n.pt", plate_model_path="./plates/best.pt"):
@@ -64,32 +54,6 @@ class VideoProcessor:
         self.crossed_ids = set()
         self.detection_history = {}
         self.logged_lost_ids = set()
-        
-        # Create SQLAlchemy engine for when we need a session outside Flask context
-        self.engine = create_engine(DATABASE_URL)
-        self.active_guard_id = None
-
-    def set_active_guard(self, guard_id):
-        """Set the active guard for this detection session"""
-        if guard_id is None:
-            self.active_guard_id = None
-            print("✅ Guard deactivated. New detections will be unassigned.")
-            return True
-            
-        try:
-            # Verify the guard exists
-            with Session(self.engine) as session:
-                guard = session.query(Guard).filter_by(guard_id=guard_id).first()
-                if not guard:
-                    print(f"❌ Guard with ID {guard_id} not found.")
-                    return False
-                    
-                self.active_guard_id = guard_id
-                print(f"✅ Active guard set to: {guard.name} (ID: {guard_id})")
-                return True
-        except Exception as e:
-            print(f"❌ Error setting active guard: {e}")
-            return False
 
     def log_detection(self, label, confidence, ocr_text, track_id=None):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -124,7 +88,8 @@ class VideoProcessor:
     def is_valid_plate_format(plate_text):
         return re.fullmatch(r"[A-Z]{3} \d{4}", plate_text.strip()) is not None
     
-    def upload_vehicle_entry(self, plate_text, plate_confidence, entry_time, screenshot_frame, timestamp_str, vehicle_type, hex_color):
+    @staticmethod
+    def upload_vehicle_entry(plate_text, plate_confidence, entry_time, screenshot_frame,timestamp_str):
         try:
             # Save screenshot to temp PNG file
             _, buffer = cv2.imencode(".png", screenshot_frame)
@@ -145,68 +110,29 @@ class VideoProcessor:
             public_url = f"{SUPABASE_URL}/storage/v1/object/public/entry/{filename}"
             print(f"✅ Screenshot uploaded: {public_url}")
 
-            # Create a SQLAlchemy session and add vehicle entry record
-            with Session(self.engine) as session:
-                # First, check if this plate exists in the customer table
-                customer = session.query(ParkingCustomer).filter_by(plate_number=plate_text).first()
+            # Insert record into database
+            data = {
+                "entry_time": entry_time,
+                "image_url": public_url,
+                "plate_number": plate_text,
                 
-                if not customer:
-                    # Create a temporary customer record with minimal information
-                    new_customer = ParkingCustomer(
-                        first_name="Haerin",
-                        last_name="Kang",
-                        plate_number=plate_text,
-                        is_registered=False,  # Mark as unregistered
-                        color=hex_color,
-                        vehicle_type=vehicle_type
-                    )
-                    session.add(new_customer)
-                    session.commit()
-                    try:
-                        session.flush()  # Ensure the customer is in the DB before referencing it
-                        customer_id = new_customer.customer_id
-                    except Exception as e:
-                        print(f"❌ Failed to create temporary customer: {e}")
-                        session.rollback()
-                        return
-                else:
-                    customer_id = customer.customer_id
-                    
-                # Create new vehicle entry
-                entry = VehicleEntry(
-                    entry_id=str(uuid.uuid4()),
-                    plate_number=plate_text,
-                    entry_time=datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S"),
-                    image_url=public_url,
-                    customer_id=customer_id,
-                    vehicle_type=vehicle_type,  # Default or based on detection
-                    hex_color=hex_color,  # Default or detected color
-                    guard_id=self.active_guard_id,
-                    status='unassigned'
-                )
-                
-                try:
-                    session.add(entry)
-                    session.commit()
-                    print("✅ Entry inserted into database")
 
-                    entry_status = "assigned" if self.active_guard_id else "unassigned"
-                    self.socketio.emit("new_vehicle_entry", {
-                        "entry_id": str(entry.entry_id),
-                        "plate_number": plate_text,
-                        "entry_time": entry_time,
-                        "image_url": public_url,
-                        "guard_id": str(self.active_guard_id) if self.active_guard_id else None,
-                        "status": entry_status
-                    })
-                except Exception as e:
-                    session.rollback()
-                    print(f"❌ Failed to insert entry: {e}")
+
+                # "registered", "parking_lot", "guard_id", "user_id" are skipped for now
+            }
+
+            insert_response = supabase.table("vehicle_entries").insert(data).execute()
+            if hasattr(insert_response, "error") and insert_response.error:
+                print(f"❌ Database insert error: {insert_response.error.message}")
+            else:
+                print("✅ Entry inserted into database")
 
         except Exception as e:
             print(f"❌ Exception in upload_vehicle_entry: {e}")
 
+
     def process_frame(self, frame, size=(640, 480)):
+        print("test_process_1")
         frame = cv2.resize(frame, size)
         original_frame = frame.copy()  # Clean version for screenshot
 
@@ -214,7 +140,7 @@ class VideoProcessor:
         detections = []
 
         target_classes = {'car', 'motorcycle', 'bike', 'bicycle'}
-        plate_line_x = 140  # Detection boundary
+        plate_line_x = 120  # Detection boundary
 
         # Draw plate detection boundary
         cv2.line(frame, (plate_line_x, 0), (plate_line_x, frame.shape[0]), (0, 255, 0), 2)
@@ -329,7 +255,7 @@ class VideoProcessor:
                     "best_plate": self.plate_buffer[track_id] if track_id in self.plate_buffer else None
                 })
 
-        # Process lost vehicle info
+        # Print out lost vehicle info
         lost_ids = self.crossed_ids - current_ids
         for lost_id in lost_ids:
             if lost_id not in self.logged_lost_ids:
@@ -339,8 +265,6 @@ class VideoProcessor:
                     if time_since_crossed >= 2:
                         print(f"Vehicle ID {lost_id} left view.")
                         print(f"  ↳ Plate: {info['plate_text']} (Conf: {info['plate_confidence']:.2f})")
-                        print(f"  ↳ Type: {info['label']}")
-                        print(f"  ↳ Color: {info['color']}")
                         print(f"  ↳ Timestamp: {info['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
 
                         best_plate = self.plate_buffer.get(lost_id)
@@ -352,9 +276,7 @@ class VideoProcessor:
                                     plate_confidence=best_plate["confidence"],
                                     entry_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
                                     timestamp_str=timestamp_str,
-                                    screenshot_frame=info['screenshot'],
-                                    vehicle_type=info['label'],
-                                    hex_color=info['color']
+                                    screenshot_frame=info['screenshot']
                                 )
                                 # ✅ Clean up after successful upload
                                 self.detection_history.pop(lost_id, None)
@@ -363,7 +285,7 @@ class VideoProcessor:
                                 self.logged_lost_ids.add(lost_id)
 
                             except Exception as e:
-                                print(f"❌ Exception in upload_vehicle_entry: {e}")
+                                print(f"Exception in upload_vehicle_entry: {e}")
 
                 self.logged_lost_ids.add(lost_id)
 
@@ -389,6 +311,9 @@ class VideoProcessor:
 
         return annotated_frame, detections
 
+    
+    
+    
     def frame_producer(self, cap):
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_delay = 1.0 / fps if fps > 0 else 0.033
@@ -472,3 +397,8 @@ class VideoProcessor:
             self.video_capture.release()
         print("Video processing stopped.")
         print("Final counts:", dict(self.class_counts))
+        print("Detection history:", self.detection_history)
+
+
+
+    
