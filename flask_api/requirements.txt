@@ -1,4 +1,3 @@
-#install flask
 cmake
 flask
 flask-sqlalchemy
@@ -9,14 +8,17 @@ opencv-python
 ultralytics==8.3.55
 pytesseract
 numpy
-flask-migrate
 python-dotenv
 requests
 Werkzeug
 supabase
 flask-jwt-extended
-flask-sqlalchemy
 paddleocr
 paddlepaddle
 psycopg2-binary
-alembic
+
+# Put this just before torch packages:
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch
+torchvision
+torchaudio
