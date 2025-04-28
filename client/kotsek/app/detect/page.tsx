@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select,
@@ -61,9 +61,22 @@ interface EntryDetectionData {
   annotationLabel: number;
 }
 
+interface ExitDetectionData {
+  vehicleType: string;
+  plateNumber: string;
+  colorAnnotation: string;
+  ocrText: string;
+  annotationLabel: number;
+}
+
 interface VideoFrameData {
   entrance_frame: string;
   entrance_detections: Detection[];
+}
+
+interface ExitVideoFrameData {
+  exit_frame: string;
+  exit_detections: Detection[];
 }
 
 interface Guard {
@@ -92,10 +105,14 @@ interface UnassignedVehicle {
 
 const SurveillanceInterface = () => {
   const entryVideoRef = useRef<HTMLImageElement | null>(null);
+  const exitVideoRef = useRef<HTMLImageElement | null>(null);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedCamera, setSelectedCamera] = useState<string>("0");
+  const [selectedExitCamera, setSelectedExitCamera] = useState<string>("0");
   const [enabled, setEnabled] = useState(false);
+  const [exitEnabled, setExitEnabled] = useState(false);
   const socket = useRef<Socket | null>(null);
+  const exitSocket = useRef<Socket | null>(null);
   const [guards, setGuards] = useState<Guard[]>([]);
   const [selectedGuard, setSelectedGuard] = useState<string>("");
   const [activeGuard, setActiveGuard] = useState<Guard | null>(null);
@@ -119,6 +136,7 @@ const SurveillanceInterface = () => {
   const router = useRouter();
 
   const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL;
+  const EXIT_URL = process.env.NEXT_PUBLIC_SERVER_URL_V2;
 
   const [entryDetectionData, setEntryDetectionData] =
     useState<EntryDetectionData>({
@@ -128,6 +146,16 @@ const SurveillanceInterface = () => {
       ocrText: "",
       annotationLabel: 0,
     });
+
+  const [exitDetectionData, setExitDetectionData] = useState<ExitDetectionData>(
+    {
+      vehicleType: "",
+      plateNumber: "",
+      colorAnnotation: "",
+      ocrText: "",
+      annotationLabel: 0,
+    }
+  );
 
   const fetchGuards = async () => {
     try {
@@ -769,7 +797,17 @@ const SurveillanceInterface = () => {
 
   const stopVideo = () => {
     if (socket.current) {
-      socket.current.emit("stop_video");
+      setEnabled(false);
+
+      if (entryVideoRef.current) {
+        entryVideoRef.current.src = "";
+      }
+
+      socket.current.emit("stop_video", null, () => {
+        // Only disconnect after confirming the stop event was sent
+        socket.current?.disconnect();
+        socket.current = null;
+      });
       socket.current.disconnect();
       socket.current = null;
     }
@@ -779,11 +817,161 @@ const SurveillanceInterface = () => {
     setEnabled(false);
   };
 
+  // Updated exit video connection (based on EntryStartVideo pattern)
+  useEffect(() => {
+    const startExitVideo = () => {
+      console.log("useEffect triggered with exitEnabled:", exitEnabled);
+
+      if (!exitEnabled) return;
+
+      try {
+        // Connect to the main socket without namespace specification
+        exitSocket.current = io(`${EXIT_URL}`, {
+          reconnection: true,
+          reconnectionAttempts: 5,
+          timeout: 10000,
+        });
+
+        exitSocket.current.on("connect", () => {
+          console.log("Exit socket connected successfully");
+          // Emit the start event to main namespace
+          exitSocket.current?.emit("start_exit_video", {
+            camera_index: selectedExitCamera,
+          });
+        });
+
+        exitSocket.current.on("connect_error", (socketError: Error) => {
+          console.error("Exit socket connection error:", socketError);
+        });
+
+        // Listen for frames on the main namespace
+        exitSocket.current.on(
+          "exit_video_frame",
+          (data: ExitVideoFrameData) => {
+            if (!data) {
+              console.error("No exit data received");
+              return;
+            }
+
+            // Assign exit frame
+            if (data?.exit_frame && exitVideoRef.current) {
+              exitVideoRef.current.src = `data:image/jpeg;base64,${data.exit_frame}`;
+            }
+
+            // Process exit detections - safely handle potential undefined values
+            if (data.exit_detections && data.exit_detections.length > 0) {
+              try {
+                // Find most confident detection with safer filtering
+                const mostConfidentDetection = data.exit_detections.reduce(
+                  (prev, current) => {
+                    if (!current) return prev;
+                    if (!prev) return current;
+                    return (current.confidence || 0) > (prev.confidence || 0)
+                      ? current
+                      : prev;
+                  }
+                );
+
+                if (mostConfidentDetection) {
+                  console.log(
+                    "Exit Detected Vehicle:",
+                    mostConfidentDetection.label
+                  );
+
+                  // Extract plate information safely
+                  const plates = mostConfidentDetection.plates || [];
+                  const plateText = Array.isArray(plates)
+                    ? plates
+                        .filter(Boolean)
+                        .map((plate) => plate?.ocr_text || "")
+                        .filter(Boolean)
+                        .join(", ")
+                    : "";
+
+                  setExitDetectionData({
+                    vehicleType: mostConfidentDetection.label || "Unknown",
+                    plateNumber: plateText,
+                    colorAnnotation:
+                      mostConfidentDetection.color_annotation || "#FFFFFF",
+                    ocrText: plateText,
+                    annotationLabel:
+                      typeof mostConfidentDetection.label === "number"
+                        ? mostConfidentDetection.label
+                        : 0,
+                  });
+                }
+              } catch (error) {
+                console.error("Error processing detection data:", error);
+              }
+            } else {
+              setExitDetectionData({
+                vehicleType: "No detection",
+                plateNumber: "N/A",
+                colorAnnotation: "N/A",
+                ocrText: "",
+                annotationLabel: 0,
+              });
+            }
+          }
+        );
+
+        exitSocket.current.on("video_error", (data: { error: string }) => {
+          console.error("Exit video error:", data.error);
+          stopExitVideo();
+        });
+
+        // Add debug event to log all incoming events
+        exitSocket.current.onAny((event, ...args) => {
+          console.log(`[Exit Socket] Received event: ${event}`, args);
+        });
+      } catch (error) {
+        console.error("Error in startExitVideo:", error);
+      }
+    };
+    startExitVideo();
+
+    // Clean up function
+    return () => {
+      console.log("Cleaning up video connection...");
+      stopExitVideo();
+    };
+  }, [selectedExitCamera, SERVER_URL]);
+
+  const stopExitVideo = useCallback(() => {
+    try {
+      if (exitSocket.current) {
+        // Set exit enabled to false first
+        setExitEnabled(false);
+
+        // Clear the video frame
+        if (exitVideoRef.current) {
+          exitVideoRef.current.src = "";
+        }
+
+        // Emit stop event and wait briefly before disconnecting
+        exitSocket.current.emit("stop_exit_video", null, () => {
+          // Only disconnect after confirming the stop event was sent
+          exitSocket.current?.disconnect();
+          exitSocket.current = null;
+        });
+      }
+    } catch (error) {
+      console.error("Error stopping exit video:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopVideo();
+      stopExitVideo();
+    };
+  }, []);
+
   return (
     <div className="min-h-screen bg-white p-8">
       <div className="max-w-[90%] mx-auto space-y-6">
         <h1 className="text-2xl font-bold">Detect Vehicles</h1>
-        <div className="flex items-center gap-4 mb-4">
+        <div className="flex items-center gap-4 mb-4 mt-4">
           <Select value={selectedCamera} onValueChange={setSelectedCamera}>
             <SelectTrigger className="w-[200px]">
               <Camera className="w-4 h-4 mr-2" />
@@ -810,11 +998,49 @@ const SurveillanceInterface = () => {
           >
             {enabled ? (
               <>
-                <Square className="w-4 h-4 mr-2" /> Stop
+                <Square className="w-4 h-4 mr-2" /> Stop Entry
               </>
             ) : (
               <>
-                <Play className="w-4 h-4 mr-2" /> Start
+                <Play className="w-4 h-4 mr-2" /> Start Entry
+              </>
+            )}
+          </Button>
+
+          <Select
+            value={selectedExitCamera}
+            onValueChange={setSelectedExitCamera}
+          >
+            <SelectTrigger className="w-[200px]">
+              <Camera className="w-4 h-4 mr-2" />
+              <SelectValue placeholder="Exit Camera" />
+            </SelectTrigger>
+            <SelectContent>
+              {devices.map((device) => (
+                <SelectItem key={device.deviceId} value={device.deviceId}>
+                  {device.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Button
+            variant={exitEnabled ? "destructive" : "default"}
+            onClick={() => {
+              if (exitEnabled) {
+                stopExitVideo();
+              } else {
+                setExitEnabled(true);
+              }
+            }}
+          >
+            {exitEnabled ? (
+              <>
+                <Square className="w-4 h-4 mr-2" /> Stop Exit
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4 mr-2" /> Start Exit
               </>
             )}
           </Button>
@@ -862,6 +1088,19 @@ const SurveillanceInterface = () => {
             />
           </CardContent>
         </Card>
+        {/* Exit Video Stream - Right Side */}
+        <Card className="w-full">
+          <CardHeader>
+            <CardTitle>Exit Stream</CardTitle>
+          </CardHeader>
+          <CardContent className="relative w-full h-[700px] bg-gray-50 rounded-lg overflow-hidden">
+            <img
+              ref={exitVideoRef}
+              alt="Exit Camera Stream"
+              className="w-full h-full object-contain"
+            />
+          </CardContent>
+        </Card>
         {/* Statistics Cards (Entry Detections) */}
         <div className="grid grid-cols-3 gap-4 mt-6">
           {/* Entry Detection Cards */}
@@ -903,6 +1142,48 @@ const SurveillanceInterface = () => {
                   style={{ color: entryDetectionData.colorAnnotation }}
                 >
                   {entryDetectionData.colorAnnotation}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="col-span-1">
+            <CardContent className="pt-4 pb-4">
+              <p className="text-xs font-medium text-gray-500">
+                Exit Vehicle Type
+              </p>
+              <p className="text-lg font-bold">
+                {exitDetectionData.vehicleType}
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="col-span-1">
+            <CardContent className="pt-4 pb-4">
+              <p className="text-xs font-medium text-gray-500">
+                Exit Plate Number
+              </p>
+              <p className="text-lg font-bold">{exitDetectionData.ocrText}</p>
+            </CardContent>
+          </Card>
+
+          <Card className="col-span-1">
+            <CardContent className="pt-4 pb-4">
+              <p className="text-xs font-medium text-gray-500">
+                Exit Detected Color
+              </p>
+              <div className="flex items-center space-x-2">
+                <div
+                  className="w-6 h-6 rounded-full border border-gray-400"
+                  style={{
+                    backgroundColor:
+                      exitDetectionData.colorAnnotation || "#ffffff",
+                  }}
+                />
+                <p
+                  className="text-lg font-bold"
+                  style={{ color: exitDetectionData.colorAnnotation }}
+                >
+                  {exitDetectionData.colorAnnotation}
                 </p>
               </div>
             </CardContent>

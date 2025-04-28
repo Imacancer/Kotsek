@@ -6,6 +6,7 @@ import numpy as np
 from paddleocr import PaddleOCR
 from flask_socketio import SocketIO, emit
 import supabase
+from supabase import Client, create_client
 from ultralytics import YOLO
 from datetime import datetime
 from threading import Thread
@@ -17,12 +18,12 @@ import base64
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine
-from db.db import db
-from supabase import create_client, Client
 
 # Import models
-from models.vehicle_entry import VehicleEntry
+from models.vehicle_exit import VehicleExit
 from models.customer import ParkingCustomer
+from models.parking_session import ParkingSession
+from models.parking_slot import ParkingSlot
 from models.guards import Guard
 
 # Load environment variables
@@ -33,10 +34,10 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-# For direct supabase storage uploads (keeping this for file storage)
+# For direct supabase storage uploads (for file storage)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-class VideoProcessor:
+class ExitDetection:
     def __init__(self, socketio, video_path, model_path="yolov8n.pt", plate_model_path="./plates/best.pt"):
         self.socketio = socketio
         self.video_path = video_path
@@ -124,7 +125,13 @@ class VideoProcessor:
     def is_valid_plate_format(plate_text):
         return re.fullmatch(r"[A-Z]{3} \d{4}", plate_text.strip()) is not None
     
-    def upload_vehicle_entry(self, plate_text, plate_confidence, entry_time, screenshot_frame, timestamp_str, vehicle_type, hex_color):
+    def process_vehicle_exit(self, plate_text, plate_confidence, exit_time, screenshot_frame, timestamp_str, vehicle_type, hex_color):
+        """
+        Process a vehicle exit:
+        1. Create a VehicleExit record
+        2. Find and update the associated ParkingSession
+        3. Free up the ParkingSlot
+        """
         try:
             # Save screenshot to temp PNG file
             _, buffer = cv2.imencode(".png", screenshot_frame)
@@ -132,7 +139,7 @@ class VideoProcessor:
             filename = f"{uuid.uuid4()}.png"
 
             # Upload to Supabase Storage
-            response = supabase.storage.from_("entry").upload(
+            response = supabase.storage.from_("exit").upload(
                 path=filename,
                 file=image_bytes,
                 file_options={"content-type": "image/png"}
@@ -142,69 +149,83 @@ class VideoProcessor:
                 print(f"❌ Supabase upload error: {response.error.message}")
                 return
 
-            public_url = f"{SUPABASE_URL}/storage/v1/object/public/entry/{filename}"
-            print(f"✅ Screenshot uploaded: {public_url}")
+            public_url = f"{SUPABASE_URL}/storage/v1/object/public/exit/{filename}"
+            print(f"✅ Exit screenshot uploaded: {public_url}")
 
-            # Create a SQLAlchemy session and add vehicle entry record
+            # Create a SQLAlchemy session and process the exit
             with Session(self.engine) as session:
-                # First, check if this plate exists in the customer table
+                # Find the customer by plate number
                 customer = session.query(ParkingCustomer).filter_by(plate_number=plate_text).first()
-                
                 if not customer:
-                    # Create a temporary customer record with minimal information
-                    new_customer = ParkingCustomer(
-                        first_name="Haerin",
-                        last_name="Kang",
-                        plate_number=plate_text,
-                        is_registered=False,  # Mark as unregistered
-                        color=hex_color,
-                        vehicle_type=vehicle_type
-                    )
-                    session.add(new_customer)
-                    session.commit()
-                    try:
-                        session.flush()  # Ensure the customer is in the DB before referencing it
-                        customer_id = new_customer.customer_id
-                    except Exception as e:
-                        print(f"❌ Failed to create temporary customer: {e}")
-                        session.rollback()
-                        return
-                else:
-                    customer_id = customer.customer_id
-                    
-                # Create new vehicle entry
-                entry = VehicleEntry(
-                    entry_id=str(uuid.uuid4()),
+                    print(f"❌ No customer found with plate number: {plate_text}")
+                    return
+                
+                # Create vehicle exit record
+                vehicle_exit = VehicleExit(
+                    exit_id=str(uuid.uuid4()),
                     plate_number=plate_text,
-                    entry_time=datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S"),
+                    exit_time=datetime.strptime(exit_time, "%Y-%m-%d %H:%M:%S"),
                     image_url=public_url,
-                    customer_id=customer_id,
-                    vehicle_type=vehicle_type,  # Default or based on detection
-                    hex_color=hex_color,  # Default or detected color
-                    guard_id=self.active_guard_id,
-                    status='unassigned'
+                    customer_id=customer.customer_id,
+                    vehicle_type=vehicle_type,
+                    hex_color=hex_color,
+                    guard_id=self.active_guard_id
                 )
                 
+                session.add(vehicle_exit)
+                session.flush()  # Get the exit_id without committing
+                
+                # Find active parking session for this vehicle
+                active_session = session.query(ParkingSession).filter_by(
+                    plate_number=plate_text,
+                    status='active',
+                    exit_id=None
+                ).first()
+                
+                if not active_session:
+                    print(f"❌ No active parking session found for plate: {plate_text}")
+                    session.rollback()
+                    return
+                
+                # Update the parking session
+                active_session.exit_id = vehicle_exit.exit_id
+                active_session.end_time = vehicle_exit.exit_time
+                active_session.duration_minutes = int(
+                    (vehicle_exit.exit_time - active_session.start_time).total_seconds() / 60
+                )
+                active_session.status = 'completed'
+                
+                # Free up the parking slot
+                parking_slot = session.query(ParkingSlot).filter_by(slot_id=active_session.slot_id).first()
+                if parking_slot:
+                    parking_slot.status = 'available'
+                    parking_slot.current_vehicle_id = None
+                
                 try:
-                    session.add(entry)
                     session.commit()
-                    print("✅ Entry inserted into database")
-
-                    entry_status = "assigned" if self.active_guard_id else "unassigned"
-                    self.socketio.emit("new_vehicle_entry", {
-                        "entry_id": str(entry.entry_id),
+                    print(f"✅ Vehicle exit processed successfully for {plate_text}")
+                    
+                    # Emit a socket event for real-time updates
+                    self.socketio.emit("vehicle_exit_processed", {
+                        "exit_id": str(vehicle_exit.exit_id),
                         "plate_number": plate_text,
-                        "entry_time": entry_time,
+                        "exit_time": exit_time,
                         "image_url": public_url,
-                        "guard_id": str(self.active_guard_id) if self.active_guard_id else None,
-                        "status": entry_status
+                        "session_id": str(active_session.session_id),
+                        "slot_id": str(parking_slot.slot_id),
+                        "slot_number": parking_slot.slot_number,
+                        "duration_minutes": active_session.duration_minutes
                     })
+                    
+                    return True
                 except Exception as e:
                     session.rollback()
-                    print(f"❌ Failed to insert entry: {e}")
+                    print(f"❌ Failed to process vehicle exit: {e}")
+                    return False
 
         except Exception as e:
-            print(f"❌ Exception in upload_vehicle_entry: {e}")
+            print(f"❌ Exception in process_vehicle_exit: {e}")
+            return False
 
     def process_frame(self, frame, size=(640, 480)):
         frame = cv2.resize(frame, size)
@@ -214,12 +235,12 @@ class VideoProcessor:
         detections = []
 
         target_classes = {'car', 'motorcycle', 'bike', 'bicycle'}
-        plate_line_x = 140  # Detection boundary
+        plate_line_x = 140  # Detection boundary for exit
 
         # Draw plate detection boundary
-        cv2.line(frame, (plate_line_x, 0), (plate_line_x, frame.shape[0]), (0, 255, 0), 2)
-        cv2.putText(frame, "Plate Detection Boundary", (plate_line_x + 10, 60), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        cv2.line(frame, (plate_line_x, 0), (plate_line_x, frame.shape[0]), (255, 0, 0), 2)
+        cv2.putText(frame, "Exit Detection Boundary", (plate_line_x + 10, 60), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
 
         current_ids = set()
 
@@ -304,10 +325,10 @@ class VideoProcessor:
                     timestamp_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
 
                     if best_plate and self.is_valid_plate_format(best_plate["ocr_text"]):
-                        print(f"Vehicle {track_id} ({label}) crossed boundary at {timestamp_str}")
+                        print(f"Vehicle {track_id} ({label}) crossed exit boundary at {timestamp_str}")
                         print(f"  ↳ Best Plate: {best_plate['ocr_text']} (Conf: {best_plate['confidence']:.2f})")
                     else:
-                        print(f"Vehicle {track_id} ({label}) crossed boundary at {timestamp_str}")
+                        print(f"Vehicle {track_id} ({label}) crossed exit boundary at {timestamp_str}")
                         print(f"  ↳ No valid plate found for ID {track_id}")
 
                     self.detection_history[track_id] = {
@@ -329,7 +350,7 @@ class VideoProcessor:
                     "best_plate": self.plate_buffer[track_id] if track_id in self.plate_buffer else None
                 })
 
-        # Process lost vehicle info
+        # Process lost vehicle info - this is where we process exits
         lost_ids = self.crossed_ids - current_ids
         for lost_id in lost_ids:
             if lost_id not in self.logged_lost_ids:
@@ -337,7 +358,7 @@ class VideoProcessor:
                 if info:
                     time_since_crossed = (datetime.now() - info["timestamp"]).total_seconds()
                     if time_since_crossed >= 2:
-                        print(f"Vehicle ID {lost_id} left view.")
+                        print(f"Vehicle ID {lost_id} left view - processing as exit.")
                         print(f"  ↳ Plate: {info['plate_text']} (Conf: {info['plate_confidence']:.2f})")
                         print(f"  ↳ Type: {info['label']}")
                         print(f"  ↳ Color: {info['color']}")
@@ -347,23 +368,25 @@ class VideoProcessor:
                         if best_plate and self.is_valid_plate_format(best_plate["ocr_text"]):
                             timestamp_str = info['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
                             try:
-                                self.upload_vehicle_entry(
+                                success = self.process_vehicle_exit(
                                     plate_text=best_plate["ocr_text"],
                                     plate_confidence=best_plate["confidence"],
-                                    entry_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
+                                    exit_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
                                     timestamp_str=timestamp_str,
                                     screenshot_frame=info['screenshot'],
                                     vehicle_type=info['label'],
                                     hex_color=info['color']
                                 )
-                                # ✅ Clean up after successful upload
-                                self.detection_history.pop(lost_id, None)
-                                self.plate_buffer.pop(lost_id, None)
-                                self.crossed_ids.discard(lost_id)
-                                self.logged_lost_ids.add(lost_id)
+                                
+                                if success:
+                                    # Clean up after successful processing
+                                    self.detection_history.pop(lost_id, None)
+                                    self.plate_buffer.pop(lost_id, None)
+                                    self.crossed_ids.discard(lost_id)
+                                    self.logged_lost_ids.add(lost_id)
 
                             except Exception as e:
-                                print(f"❌ Exception in upload_vehicle_entry: {e}")
+                                print(f"❌ Exception in process_vehicle_exit: {e}")
 
                 self.logged_lost_ids.add(lost_id)
 
@@ -383,9 +406,9 @@ class VideoProcessor:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
 
         # Redraw line
-        cv2.line(annotated_frame, (plate_line_x, 0), (plate_line_x, frame.shape[0]), (0, 255, 0), 2)
-        cv2.putText(annotated_frame, "Plate Detection Boundary", (plate_line_x + 10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        cv2.line(annotated_frame, (plate_line_x, 0), (plate_line_x, frame.shape[0]), (255, 0, 0), 2)
+        cv2.putText(annotated_frame, "Exit Detection Boundary", (plate_line_x + 10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
 
         return annotated_frame, detections
 
@@ -422,61 +445,99 @@ class VideoProcessor:
         start_time = time.time()
         frame_count = 0
         while self.running:
-            if self.result_queue.empty():
-                time.sleep(0.01)
-                continue
-            result = self.result_queue.get()
-            frame_count += 1
-            elapsed_time = time.time() - start_time
-            fps = frame_count / elapsed_time if elapsed_time > 0 else 0
-            
-            self.socketio.emit("video_frame", {
-                "entrance_frame": result["frame_data"],
-                "entrance_detections": result["detections"],
-                "counts": result["counts"],
-                "fps": fps
-            })
-            
-            if frame_count % 30 == 0:
-                print(f"Processing FPS: {fps:.2f}")
-                if frame_count > 100:
-                    start_time = time.time()
-                    frame_count = 0
+            try:
+                if self.result_queue.empty():
+                    time.sleep(0.01)
+                    continue
+                    
+                result = self.result_queue.get()
+                frame_count += 1
+                elapsed_time = time.time() - start_time
+                fps = frame_count / elapsed_time if elapsed_time > 0 else 0
+                
+                # Check if any clients are connected before emitting
+                if not self.socketio.server.manager.rooms.get('/'):
+                    print("No clients connected, skipping frame emission")
+                    continue
+                    
+                self.socketio.emit("exit_video_frame", {
+                    "exit_frame": result["frame_data"],
+                    "exit_detections": result["detections"],
+                    "exit_counts": result["counts"],
+                    "fps": fps
+                }, ignore_queue=True)  # Add ignore_queue to prevent backlog
+                
+                if frame_count % 30 == 0:
+                    print(f"Processing Exit FPS: {fps:.2f}")
+                    if frame_count > 100:
+                        start_time = time.time()
+                        frame_count = 0
+                        
+            except Exception as e:
+                if isinstance(e, BrokenPipeError):
+                    print("Client connection lost during frame emission")
+                else:
+                    print(f"Error during frame emission: {str(e)}")
+                # Brief pause to prevent CPU spiking in error cases
+                time.sleep(0.1)
 
     def start(self):
         if self.running:
-            return {"success": False, "error": "Already running"}
-        try:
-            self.running = True
-            self.video_capture = cv2.VideoCapture(self.video_path)
-            if not self.video_capture.isOpened():
-                self.socketio.emit("video_error", {"error": "Video file not available"})
-                self.running = False
-                raise Exception("Video file not available")
-            self.video_capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-            self.producer_thread = Thread(target=self.frame_producer, args=(self.video_capture,))
-            self.processor_thread = Thread(target=self.frame_processor)
-            self.emit_thread = Thread(target=self.emit_frames)
-            self.producer_thread.daemon = True
-            self.processor_thread.daemon = True
-            self.emit_thread.daemon = True
-            self.producer_thread.start()
-            self.processor_thread.start()
-            self.emit_thread.start()
-            print("Video processing started.")
-        except Exception as e:
+            return
+        self.running = True
+        self.video_capture = cv2.VideoCapture(self.video_path)
+        if not self.video_capture.isOpened():
+            self.socketio.emit("video_error", {"error": "Exit video feed not available"})
             self.running = False
-            error_msg = f"Failed to start video processing: {str(e)}"
-            print(error_msg)
-            self.socketio.emit("video_error", {"error": error_msg})
-            return {"success": False, "error": error_msg}
-
+            return
+        self.video_capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
+        self.producer_thread = Thread(target=self.frame_producer, args=(self.video_capture,))
+        self.processor_thread = Thread(target=self.frame_processor)
+        self.emit_thread = Thread(target=self.emit_frames)
+        self.producer_thread.daemon = True
+        self.processor_thread.daemon = True
+        self.emit_thread.daemon = True
+        self.producer_thread.start()
+        self.processor_thread.start()
+        self.emit_thread.start()
+        print("Exit video processing started.")
 
     def stop(self):
-        if not self.running:
-            return
-        self.running = False
-        if self.video_capture:
-            self.video_capture.release()
-        print("Video processing stopped.")
-        print("Final counts:", dict(self.class_counts))
+        try:
+            if not self.running:
+                return
+                
+            self.running = False
+            
+            # Stop frame processing threads
+            if self.processor_thread and self.processor_thread.is_alive():
+                self.processor_thread.join(timeout=1.0)
+                
+            if self.producer_thread and self.producer_thread.is_alive():
+                self.producer_thread.join(timeout=1.0)
+                
+            if self.emit_thread and self.emit_thread.is_alive():
+                self.emit_thread.join(timeout=1.0)
+            
+            # Release video capture
+            if self.video_capture:
+                self.video_capture.release()
+                self.video_capture = None
+                
+            # Clear queues
+            while not self.frame_queue.empty():
+                try:
+                    self.frame_queue.get_nowait()
+                except:
+                    pass
+                    
+            while not self.result_queue.empty():
+                try:
+                    self.result_queue.get_nowait()
+                except:
+                    pass
+                    
+            print("Exit video processing stopped cleanly")
+            
+        except Exception as e:
+            print(f"Error during exit detection cleanup: {str(e)}")
