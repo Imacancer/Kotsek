@@ -22,6 +22,7 @@ from supabase import create_client, Client
 
 # Import models
 from models.vehicle_entry import VehicleEntry
+from models.vehicle_exit import VehicleExit
 from models.customer import ParkingCustomer
 from models.guards import Guard
 
