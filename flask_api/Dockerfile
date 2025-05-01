@@ -18,6 +18,9 @@ RUN apt-get update && \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+RUN apt update && apt install -y ffmpeg
+
+
 # Set python3.10 as default
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1
 
