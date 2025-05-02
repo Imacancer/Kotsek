@@ -96,7 +96,6 @@ const Sidebar = () => {
   const protectedNavItems = [
     { name: "Detect", icon: Car, href: "/detect" },
     { name: "Analytics", icon: ChartNoAxesCombined, href: "/analytics" },
-    { name: "Admin", icon: User, href: "/admin" },
   ];
 
   // Auth-related navigation

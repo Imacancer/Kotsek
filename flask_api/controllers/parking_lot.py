@@ -174,83 +174,107 @@ def release_parking_slot():
         return jsonify({"error": str(e)}), 500
 
 @parking_bp.route('/parking/get-parking-status', methods=['GET'])
-def get_parking_status():
+def get_slots_by_vehicle_type():
     try:
-        # Fetch all parking slots with vehicle information
+        # Get optional filter parameter
+        vehicle_type = request.args.get('vehicle_type')
+        lot_id = request.args.get('lot_id')
+        
+        # Base query
         query = db.session.query(
             ParkingSlot, 
             VehicleEntry.plate_number
         ).outerjoin(
             VehicleEntry, 
             ParkingSlot.current_vehicle_id == VehicleEntry.entry_id
-        ).all()
+        )
         
-        # Initialize parking data structure
-        parking_data = {
-            "left": [],
-            "right": [],
-            "center": [],
-            "top": []
+        # Apply filters if provided
+        if vehicle_type:
+            query = query.filter(ParkingSlot.vehicle_type == vehicle_type)
+        if lot_id:
+            query = query.filter(ParkingSlot.lot_id == lot_id)
+            
+        # Execute query
+        results = query.all()
+        
+        # Initialize data structure
+        response_data = {
+            "car": {
+                "left": [],
+                "right": [],
+                "center": [],
+                "top": []
+            },
+            "motorcycle": [],
+            "bicycle": []
         }
         
-        # Populate with query results
-        for slot, plate_number in query:
-            if slot.section in parking_data:
-                parking_data[slot.section].append({
-                    "id": slot.slot_id,
-                    "slot_number": slot.slot_number,
-                    "lot_id": slot.lot_id,
-                    "status": slot.status,
-                    "plate_number": plate_number
-                })
+        # Process query results
+        for slot, plate_number in results:
+            slot_data = {
+                "id": str(slot.slot_id),
+                "slot_number": slot.slot_number,
+                "lot_id": slot.lot_id,
+                "status": slot.status,
+                "plate_number": plate_number
+            }
+            
+            if slot.vehicle_type == 'car':
+                # For cars, organize by section
+                if slot.section in response_data["car"]:
+                    response_data["car"][slot.section].append(slot_data)
+            elif slot.vehicle_type == 'motorcycle':
+                # For motorcycles, add to flat list without sections
+                response_data["motorcycle"].append(slot_data)
+            elif slot.vehicle_type == 'bicycle':
+                # For bicycles, add to flat list without sections
+                response_data["bicycle"].append(slot_data)
         
-        # Get statistics
-        total_spaces = db.session.query(db.func.count(ParkingSlot.slot_id))\
-            .filter(ParkingSlot.vehicle_type == 'car').scalar()
-            
-        occupied_spaces = db.session.query(db.func.count(ParkingSlot.slot_id))\
-            .filter(ParkingSlot.vehicle_type == 'car', ParkingSlot.status == 'occupied').scalar()
-            
-        reserved_spaces = db.session.query(db.func.count(ParkingSlot.slot_id))\
-            .filter(ParkingSlot.vehicle_type == 'car', ParkingSlot.status == 'reserved').scalar()
-            
-        vacant_spaces = total_spaces - occupied_spaces - reserved_spaces
+        # Get statistics for each vehicle type
+        stats = {}
         
-        # Get motorcycle and bicycle statistics from parking lots
+        # Car statistics - aggregate across all car lots
+        car_lots = ParkingLot.query.filter_by(vehicle_type='car').all()
+        stats["car"] = {
+            "total": sum(lot.total_capacity for lot in car_lots),
+            "occupied": sum(lot.occupied_count() for lot in car_lots),
+            "reserved": sum(lot.reserved_count() for lot in car_lots),
+            "available": sum(lot.available_count() for lot in car_lots)
+        }
+        
+        # Motorcycle statistics
         motorcycle_lots = ParkingLot.query.filter_by(vehicle_type='motorcycle').all()
-        bicycle_lots = ParkingLot.query.filter_by(vehicle_type='bicycle').all()
-        
-        motorcycle_stats = {
+        stats["motorcycle"] = {
             "total": sum(lot.total_capacity for lot in motorcycle_lots),
-            "occupied": sum(lot.occupied_count() for lot in motorcycle_lots)
+            "occupied": sum(lot.occupied_count() for lot in motorcycle_lots),
+            "reserved": sum(lot.reserved_count() for lot in motorcycle_lots),
+            "available": sum(lot.available_count() for lot in motorcycle_lots)
         }
         
-        bicycle_stats = {
+        # Bicycle statistics
+        bicycle_lots = ParkingLot.query.filter_by(vehicle_type='bicycle').all()
+        stats["bicycle"] = {
             "total": sum(lot.total_capacity for lot in bicycle_lots),
-            "occupied": sum(lot.occupied_count() for lot in bicycle_lots)
+            "occupied": sum(lot.occupied_count() for lot in bicycle_lots),
+            "reserved": sum(lot.reserved_count() for lot in bicycle_lots),
+            "available": sum(lot.available_count() for lot in bicycle_lots)
         }
         
-        if total_spaces > 0:
-            capacity_status = "High" if occupied_spaces/total_spaces > 0.8 else \
-                            "Medium" if occupied_spaces/total_spaces > 0.5 else "Low"
-        else:
-            capacity_status = "N/A"  # Or any default value you prefer
+        # Add capacity status for each vehicle type
+        for vehicle_type in stats:
+            if stats[vehicle_type]["total"] > 0:
+                occupied_ratio = stats[vehicle_type]["occupied"] / stats[vehicle_type]["total"]
+                stats[vehicle_type]["capacity_status"] = "High" if occupied_ratio > 0.8 else \
+                                                         "Medium" if occupied_ratio > 0.5 else "Low"
+            else:
+                stats[vehicle_type]["capacity_status"] = "N/A"
         
         return jsonify({
             "success": True,
             "data": {
-                "parking_slots": parking_data,
-                "stats": {
-                    "car": {
-                        "total": total_spaces,
-                        "occupied": occupied_spaces,
-                        "reserved": reserved_spaces,
-                        "vacant": vacant_spaces
-                    },
-                    "motorcycle": motorcycle_stats,
-                    "bicycle": bicycle_stats,
-                    "capacity_status": capacity_status
-                }
+                "slots": response_data,
+                "stats": stats
             }
         }), 200
         

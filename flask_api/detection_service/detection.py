@@ -153,8 +153,8 @@ class VideoProcessor:
                 if not customer:
                     # Create a temporary customer record with minimal information
                     new_customer = ParkingCustomer(
-                        first_name="Guest",
-                        last_name="Guest",
+                        first_name="Haerin",
+                        last_name="Kang",
                         plate_number=plate_text,
                         is_registered=False,  # Mark as unregistered
                         color=hex_color,
