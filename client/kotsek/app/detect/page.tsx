@@ -82,6 +82,8 @@ interface ExitDetectionData {
 interface VideoFrameData {
   entrance_frame: string;
   entrance_detections: Detection[];
+  exit_frame?: string;
+  exit_detections?: Detection[];
 }
 
 interface ExitVideoFrameData {
@@ -130,7 +132,22 @@ const SurveillanceInterface = () => {
   const [enabled, setEnabled] = useState(false);
   const [exitEnabled, setExitEnabled] = useState(false);
   const socket = useRef<Socket | null>(null);
+<<<<<<< HEAD
   const exitSocket = useRef<Socket | null>(null);
+=======
+
+  const [entryEnabled, setEntryEnabled] = useState(false);
+  const [exitEnabled, setExitEnabled] = useState(false);
+
+
+  const [exitDetectionData, setExitDetectionData] = useState<EntryDetectionData>({
+    vehicleType: "",
+    plateNumber: "",
+    colorAnnotation: "",
+    ocrText: "",
+    annotationLabel: 0,
+  });
+>>>>>>> origin/for-analytics
   const [guards, setGuards] = useState<Guard[]>([]);
   const [selectedGuard, setSelectedGuard] = useState<string>("");
   const [activeGuard, setActiveGuard] = useState<Guard | null>(null);
@@ -1023,7 +1040,6 @@ const SurveillanceInterface = () => {
         socket.current.on("connect", () => {
           console.log("Socket connected successfully");
           setDebugInfo((prev) => ({ ...prev, socketStatus: "connected" }));
-          socket.current?.emit("start_video", { camera_index: selectedCamera });
         });
 
         socket.current.on("connect_error", (socketError: Error) => {
@@ -1301,16 +1317,73 @@ const SurveillanceInterface = () => {
           </Select>
 
           <Button
-            variant={enabled ? "destructive" : "default"}
+            variant={entryEnabled ? "destructive" : "default"}
             onClick={() => {
-              if (enabled) {
-                stopVideo();
+              if (entryEnabled) {
+                socket.current?.emit("stop_entry_video");
+                setEntryEnabled(false);
               } else {
-                setEnabled(true);
+                if (!socket.current || !socket.current.connected) {
+                  socket.current = io(SERVER_URL, {
+                    reconnection: true,
+                    reconnectionAttempts: 5,
+                    timeout: 10000,
+                  });
+
+                  socket.current.on("connect", () => {
+                    console.log("Socket reconnected (entry)");
+                    socket.current?.emit("start_entry_video", { camera_index: selectedCamera });
+                  });
+
+                  socket.current.on("connect_error", (socketError: Error) => {
+                    console.error("Socket connection error (entry):", socketError);
+                  });
+
+                  socket.current.on("entry_video_frame", (data: VideoFrameData) => {
+                    if (data?.entrance_frame && entryVideoRef.current) {
+                      entryVideoRef.current.src = `data:image/jpeg;base64,${data.entrance_frame}`;
+                    }
+
+                    if (data.entrance_detections?.length > 0) {
+                      const mostConfidentDetection = data.entrance_detections.reduce(
+                        (prev, current) =>
+                          current.confidence > prev.confidence ? current : prev
+                      );
+
+                      const PlateNum =
+                        mostConfidentDetection.plates
+                          ?.map((plate) => plate.ocr_text)
+                          .join(", ") || "";
+
+                      setEntryDetectionData({
+                        vehicleType: mostConfidentDetection.label,
+                        plateNumber: PlateNum,
+                        colorAnnotation: mostConfidentDetection?.color_annotation,
+                        ocrText:
+                          mostConfidentDetection.plates
+                            .map((plate) => plate.ocr_text)
+                            .join(", ") || "",
+                        annotationLabel: parseInt(mostConfidentDetection.label),
+                      });
+                    } else {
+                      setEntryDetectionData({
+                        vehicleType: "No detection",
+                        plateNumber: "N/A",
+                        colorAnnotation: "N/A",
+                        ocrText: "",
+                        annotationLabel: 0,
+                      });
+                    }
+                  });
+                } else {
+                  socket.current.emit("start_entry_video", { camera_index: selectedCamera });
+                }
+
+                setEntryEnabled(true);
               }
             }}
           >
-            {enabled ? (
+            {entryEnabled ? (
               <>
                 <Square className="w-4 h-4 mr-2" /> Stop Entry
               </>
@@ -1321,6 +1394,7 @@ const SurveillanceInterface = () => {
             )}
           </Button>
 
+<<<<<<< HEAD
           <Select
             value={selectedExitCamera}
             onValueChange={setSelectedExitCamera}
@@ -1338,12 +1412,78 @@ const SurveillanceInterface = () => {
             </SelectContent>
           </Select>
 
+=======
+          
+          
+>>>>>>> origin/for-analytics
           <Button
             variant={exitEnabled ? "destructive" : "default"}
             onClick={() => {
               if (exitEnabled) {
+<<<<<<< HEAD
                 stopExitVideo();
               } else {
+=======
+                socket.current?.emit("stop_exit_video");
+                setExitEnabled(false);
+              } else {
+                if (!socket.current || !socket.current.connected) {
+                  socket.current = io(SERVER_URL, {
+                    reconnection: true,
+                    reconnectionAttempts: 5,
+                    timeout: 10000,
+                  });
+
+                  socket.current.on("connect", () => {
+                    console.log("Socket reconnected (exit)");
+                    socket.current?.emit("start_exit_video", { camera_index: selectedCamera });
+                  });
+
+                  socket.current.on("connect_error", (socketError: Error) => {
+                    console.error("Socket connection error (exit):", socketError);
+                  });
+
+                  socket.current.on("exit_video_frame", (data: VideoFrameData) => {
+                    if (data?.exit_frame && exitVideoRef.current) {
+                      exitVideoRef.current.src = `data:image/jpeg;base64,${data.exit_frame}`;
+                    }
+
+                    if (data.exit_detections && data.exit_detections.length > 0) {
+                      const mostConfidentDetection = data.exit_detections.reduce(
+                        (prev, current) =>
+                          current.confidence > prev.confidence ? current : prev
+                      );
+
+                      const PlateNum =
+                        mostConfidentDetection.plates
+                          ?.map((plate) => plate.ocr_text)
+                          .join(", ") || "";
+
+                      setExitDetectionData({
+                        vehicleType: mostConfidentDetection.label,
+                        plateNumber: PlateNum,
+                        colorAnnotation: mostConfidentDetection?.color_annotation,
+                        ocrText:
+                          mostConfidentDetection.plates
+                            .map((plate) => plate.ocr_text)
+                            .join(", ") || "",
+                        annotationLabel: parseInt(mostConfidentDetection.label),
+                      });
+                    } else {
+                      setExitDetectionData({
+                        vehicleType: "No detection",
+                        plateNumber: "N/A",
+                        colorAnnotation: "N/A",
+                        ocrText: "",
+                        annotationLabel: 0,
+                      });
+                    }
+                  });
+                } else {
+                  socket.current.emit("start_exit_video", { camera_index: selectedCamera });
+                }
+
+>>>>>>> origin/for-analytics
                 setExitEnabled(true);
               }
             }}
@@ -1392,7 +1532,7 @@ const SurveillanceInterface = () => {
         {/* Entry Video Stream - Larger, Full Width */}
         <Card className="w-full">
           <CardHeader>
-            <CardTitle>Entry Stream</CardTitle>
+            <CardTitle>Gate 1(Entry Stream)</CardTitle>
           </CardHeader>
           <CardContent className="relative w-full h-[700px] bg-gray-50 rounded-lg overflow-hidden">
             <img

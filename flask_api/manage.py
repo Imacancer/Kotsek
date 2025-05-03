@@ -3,8 +3,12 @@ eventlet.monkey_patch()
 from flask import Flask
 from flask_cors import CORS
 from flask_socketio import SocketIO
+<<<<<<< HEAD
 from detection_service.exit_detection import ExitDetection
 from detection_service.detection import VideoProcessor
+=======
+from detection_service.detection import VideoProcessor,EntryVideoProcessor  
+>>>>>>> origin/for-analytics
 from controllers.auth import auth_bp, init_jwt
 from controllers.unassigned import vehicle_bp
 from controllers.assign_guard import guard_bp
@@ -26,7 +30,11 @@ load_dotenv()
 
 
 def create_app():
+<<<<<<< HEAD
     global video_processor, exit_detection
+=======
+    global entry_video_processor, exit_video_processor
+>>>>>>> origin/for-analytics
     app = Flask(__name__)
     app.secret_key = os.getenv('SECRET_KEY', 'FB27D156173716A31912F1BD6CEDB')
 
@@ -54,11 +62,19 @@ def create_app():
 
     # Initialize SocketIO and any additional services
     socketio = SocketIO(app, ping_timeout=1, ping_interval=2, 
+<<<<<<< HEAD
                         cors_allowed_origins="*", max_http_buffer_size=1e8, async_mode='eventlet')
+=======
+                        cors_allowed_origins="*", max_http_buffer_size=1e8)
+    cctv = "rtsp://admincctv:admincctv@192.168.0.134/stream1"
+>>>>>>> origin/for-analytics
 
-    video_path = "./sample/mamamo.mov"  # Update path as necessary
-    video_processor = VideoProcessor(socketio, video_path)  # Local variable
-    app.video_processor = video_processor
+    video_path_exit = "./sample/mamamo.mov"  # Update path as necessary
+    video_path_entry = "./sample/1 entry.mp4"
+    entry_video_processor = EntryVideoProcessor(socketio, cctv) 
+    exit_video_processor = VideoProcessor(socketio, video_path_exit)
+    app.entry_video_processor = entry_video_processor
+    app.exit_video_processor = exit_video_processor
 
     # exit_video_path = "./sample/exit_video.mov"  # Update with your exit video path
     # exit_detection = ExitDetection(socketio, exit_video_path)
@@ -73,15 +89,26 @@ def create_app():
     
     app.active_guard_id = property(lambda app: app.video_processor.active_guard_id)
 
-    @socketio.on("start_video")
-    def handle_start_video(data):
-        print("Received start_video event")
-        video_processor.start()
 
-    @socketio.on("stop_video")
-    def handle_stop_video(data=None):
-        print("Received stop_video event")
-        video_processor.stop()
+    @socketio.on("start_entry_video")
+    def handle_start_entry_video(data):
+        print("Received start_entry_video event")
+        entry_video_processor.start()
+
+    @socketio.on("stop_entry_video")
+    def handle_stop_entry_video(data=None):
+        print("Received stop_entry_video event")
+        entry_video_processor.stop()
+
+    @socketio.on("start_exit_video")
+    def handle_start_exit_video(data):
+        print("Received start_exit_video event")
+        exit_video_processor.start()
+
+    @socketio.on("stop_exit_video")
+    def handle_stop_exit_video(data=None):
+        print("Received stop_exit_video event")
+        exit_video_processor.stop()
 
     # @socketio.on("start_exit_video")
     # def handle_start_exit_video(data):
