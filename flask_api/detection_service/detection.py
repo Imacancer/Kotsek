@@ -346,6 +346,7 @@ class VideoProcessor:
 
 
     def process_frame(self, frame, size=None):
+        print(f"✅ YOLO running on: {self.model.device}")
         filtered_boxes = []
         filtered_track_ids = []
         filtered_confidences = []

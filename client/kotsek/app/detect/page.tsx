@@ -35,7 +35,6 @@ import {
 } from "@/components/ui/table";
 import MotorcycleDialog from "@/components/MotorcycleDialog";
 import BicycleDialog from "@/components/BicycleDialog";
-
 interface MediaDeviceInfo {
   deviceId: string;
   label: string;
@@ -71,24 +70,11 @@ interface EntryDetectionData {
   annotationLabel: number;
 }
 
-interface ExitDetectionData {
-  vehicleType: string;
-  plateNumber: string;
-  colorAnnotation: string;
-  ocrText: string;
-  annotationLabel: number;
-}
-
 interface VideoFrameData {
   entrance_frame: string;
   entrance_detections: Detection[];
   exit_frame?: string;
   exit_detections?: Detection[];
-}
-
-interface ExitVideoFrameData {
-  exit_frame: string;
-  exit_detections: Detection[];
 }
 
 interface Guard {
@@ -105,7 +91,13 @@ interface SelectedSlot {
   status?: string;
   current_vehicle_id?: string;
 }
-
+interface SpecialtyVehicleSlot {
+  id: string;
+  slot_number: number;
+  status: "available" | "occupied" | "reserved";
+  current_vehicle_id?: string;
+  plate_number?: string;
+}
 interface UnassignedVehicle {
   id: string;
   plate: string;
@@ -114,7 +106,6 @@ interface UnassignedVehicle {
   entry_time: string;
   exit_time: string | null;
 }
-
 interface SpecialtyVehicleSlot {
   id: string;
   slot_number: number;
@@ -122,22 +113,46 @@ interface SpecialtyVehicleSlot {
   current_vehicle_id?: string;
   plate_number?: string;
 }
-
 const SurveillanceInterface = () => {
   const entryVideoRef = useRef<HTMLImageElement | null>(null);
   const exitVideoRef = useRef<HTMLImageElement | null>(null);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedCamera, setSelectedCamera] = useState<string>("0");
-  const [selectedExitCamera, setSelectedExitCamera] = useState<string>("0");
   const [enabled, setEnabled] = useState(false);
-  const [exitEnabled, setExitEnabled] = useState(false);
   const socket = useRef<Socket | null>(null);
+  console.log("Socket:", socket.current);
+  const BASE_URL = "http://localhost:5001";
+  useEffect(() => {
+    socket.current = io(BASE_URL, {
+      transports: ["polling", "websocket"],  // ⬅️ Add "polling" as fallback
+      reconnection: true,
+    });
 
-
+    socket.current.on("connect", () => {
+      console.log("✅ Socket connected");
+    });
+  
+    socket.current.on("connect_error", (err: Error) => {
+      console.error("❌ Connect error:", err);
+    });
+    
+  
+    return () => {
+      if (socket.current) socket.current.disconnect();
+    };
+  }, []);
   const [entryEnabled, setEntryEnabled] = useState(false);
   const [exitEnabled, setExitEnabled] = useState(false);
-
-
+  const [motorcycleData, setMotorcycleData] = useState<ParkingSlot[]>([]);
+  const [bicycleData, setBicycleData] = useState<ParkingSlot[]>([]);
+  const [showMotorcycleDialog, setShowMotorcycleDialog] = useState(false);
+  const [showBicycleDialog, setShowBicycleDialog] = useState(false);
+  const [selectedVehicleType, setSelectedVehicleType] = useState<string>("");
+  const [bikeLeftData, setBikeLeftData] = useState<SpecialtyVehicleSlot[]>([]);
+  const [bikeRightData, setBikeRightData] = useState<SpecialtyVehicleSlot[]>(
+    []
+  );
+  const [motorLotData, setMotorLotData] = useState<SpecialtyVehicleSlot[]>([]);
   const [exitDetectionData, setExitDetectionData] = useState<EntryDetectionData>({
     vehicleType: "",
     plateNumber: "",
@@ -145,9 +160,6 @@ const SurveillanceInterface = () => {
     ocrText: "",
     annotationLabel: 0,
   });
-
-  const exitSocket = useRef<Socket | null>(null);
-
   const [guards, setGuards] = useState<Guard[]>([]);
   const [selectedGuard, setSelectedGuard] = useState<string>("");
   const [activeGuard, setActiveGuard] = useState<Guard | null>(null);
@@ -157,22 +169,12 @@ const SurveillanceInterface = () => {
   const [parkingDataTop, setParkingDataTop] = useState<ParkingSlot[]>([]);
   const [isSlotDialogOpen, setIsSlotDialogOpen] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState<SelectedSlot | null>(null);
-  const [motorcycleData, setMotorcycleData] = useState<ParkingSlot[]>([]);
-  const [bicycleData, setBicycleData] = useState<ParkingSlot[]>([]);
-  const [showMotorcycleDialog, setShowMotorcycleDialog] = useState(false);
-  const [showBicycleDialog, setShowBicycleDialog] = useState(false);
-  const [selectedVehicleType, setSelectedVehicleType] = useState<string>("");
   const [unassignedVehicles, setUnassignedVehicles] = useState<
     UnassignedVehicle[]
   >([]);
-  const [bikeLeftData, setBikeLeftData] = useState<SpecialtyVehicleSlot[]>([]);
-  const [bikeRightData, setBikeRightData] = useState<SpecialtyVehicleSlot[]>(
-    []
-  );
-  const [motorLotData, setMotorLotData] = useState<SpecialtyVehicleSlot[]>([]);
   const [selectedVehicle, setSelectedVehicle] = useState<string | null>(null);
   const [currentSpecialtySection, setCurrentSpecialtySection] =
-    useState<string>("");
+  useState<string>("");
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const [debugInfo, setDebugInfo] = useState({
@@ -183,8 +185,7 @@ const SurveillanceInterface = () => {
   const router = useRouter();
 
   const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL;
-  const EXIT_URL = process.env.NEXT_PUBLIC_SERVER_URL_V2;
-
+  console.log("➡️ Base URL:", SERVER_URL);
   const [entryDetectionData, setEntryDetectionData] =
     useState<EntryDetectionData>({
       vehicleType: "",
@@ -193,16 +194,6 @@ const SurveillanceInterface = () => {
       ocrText: "",
       annotationLabel: 0,
     });
-
-  const [exitDetectionData, setExitDetectionData] = useState<ExitDetectionData>(
-    {
-      vehicleType: "",
-      plateNumber: "",
-      colorAnnotation: "",
-      ocrText: "",
-      annotationLabel: 0,
-    }
-  );
 
   const fetchGuards = async () => {
     try {
@@ -271,7 +262,7 @@ const SurveillanceInterface = () => {
             slot_number: slot.slot_number,
             lot_id: slot.lot_id,
             status: slot.status,
-            plate_number: slot.plate_number || undefined,
+            plate_number: slot.status === "available" ? undefined : slot.plate_number,
             current_vehicle_id: slot.current_vehicle_id || undefined,
           }))
         );
@@ -282,7 +273,7 @@ const SurveillanceInterface = () => {
             slot_number: slot.slot_number,
             lot_id: slot.lot_id,
             status: slot.status,
-            plate_number: slot.plate_number || undefined,
+            plate_number: slot.status === "available" ? undefined : slot.plate_number,
             current_vehicle_id: slot.current_vehicle_id || undefined,
           }))
         );
@@ -293,7 +284,7 @@ const SurveillanceInterface = () => {
             slot_number: slot.slot_number,
             lot_id: slot.lot_id,
             status: slot.status,
-            plate_number: slot.plate_number || undefined,
+            plate_number: slot.status === "available" ? undefined : slot.plate_number,
             current_vehicle_id: slot.current_vehicle_id || undefined,
           }))
         );
@@ -304,7 +295,7 @@ const SurveillanceInterface = () => {
             slot_number: slot.slot_number,
             lot_id: slot.lot_id,
             status: slot.status,
-            plate_number: slot.plate_number || undefined,
+            plate_number: slot.status === "available" ? undefined : slot.plate_number,
             current_vehicle_id: slot.current_vehicle_id || undefined,
           }))
         );
@@ -316,7 +307,7 @@ const SurveillanceInterface = () => {
             slot_number: slot.slot_number,
             lot_id: slot.lot_id,
             status: slot.status,
-            plate_number: slot.plate_number || undefined,
+            plate_number: slot.status === "available" ? undefined : slot.plate_number,
             current_vehicle_id: slot.current_vehicle_id || undefined,
             vehicle_type: "motorcycle",
           })
@@ -340,7 +331,7 @@ const SurveillanceInterface = () => {
           slot_number: slot.slot_number,
           lot_id: slot.lot_id,
           status: slot.status,
-          plate_number: slot.plate_number || undefined,
+          plate_number: slot.status === "available" ? undefined : slot.plate_number,
           current_vehicle_id: slot.current_vehicle_id || undefined,
           vehicle_type: "bicycle",
         }));
@@ -432,7 +423,6 @@ const SurveillanceInterface = () => {
   }, [SERVER_URL]);
 
   // Handle slot click
-  // Update the handleSlotClick function
   // Update the handleSlotClick function
   const handleSlotClick = useCallback(
     (
@@ -530,9 +520,9 @@ const SurveillanceInterface = () => {
         slot_section: selectedSlot.section,
         entry_id: selectedVehicle,
         lot_id: lotNumber,
-        vehicle_type: selectedVehicleType || undefined, // Add vehicle type for motorcycle/bicycle
+        vehicle_type: selectedVehicleType || undefined, // Add vehicle type for motorcycle/bicycle 
       });
-
+      console.log("Selected Slot ID:", selectedSlot.slot_number);
       if (response.data && response.data.success) {
         toast.success(response.data.message);
         setIsSlotDialogOpen(false);
@@ -555,7 +545,6 @@ const SurveillanceInterface = () => {
       }
     }
   };
-
   const assignSpecialtySlot = async (slotId: string) => {
     if (!selectedVehicle) {
       toast.error("Please select a vehicle to assign");
@@ -701,7 +690,6 @@ const SurveillanceInterface = () => {
       }
     }
   };
-
   // Update releaseParkingSlot function
   const releaseParkingSlot = async () => {
     if (!selectedSlot) {
@@ -729,7 +717,6 @@ const SurveillanceInterface = () => {
       }
     } catch (error) {
       console.error("Error in releaseSpecialtySlot:", error);
-
       if (axios.isAxiosError(error)) {
         console.error("API Error Response:", {
           status: error.response?.status,
@@ -750,7 +737,6 @@ const SurveillanceInterface = () => {
       }
     }
   };
-
   const motorcycleSpaces = motorcycleData.length;
   const occupiedMotorcycleSpaces = motorcycleData.filter(
     (slot) => slot.status === "occupied"
@@ -771,7 +757,6 @@ const SurveillanceInterface = () => {
   ).length;
   const vacantBicycleSpaces =
     bicycleSpaces - occupiedBicycleSpaces - reservedBicycleSpaces;
-
   // Initialize data on component mount
   useEffect(() => {
     fetchParkingData();
@@ -1127,17 +1112,7 @@ const SurveillanceInterface = () => {
 
   const stopVideo = () => {
     if (socket.current) {
-      setEnabled(false);
-
-      if (entryVideoRef.current) {
-        entryVideoRef.current.src = "";
-      }
-
-      socket.current.emit("stop_video", null, () => {
-        // Only disconnect after confirming the stop event was sent
-        socket.current?.disconnect();
-        socket.current = null;
-      });
+      socket.current.emit("stop_video");
       socket.current.disconnect();
       socket.current = null;
     }
@@ -1146,156 +1121,6 @@ const SurveillanceInterface = () => {
     }
     setEnabled(false);
   };
-
-  // Updated exit video connection (based on EntryStartVideo pattern)
-  useEffect(() => {
-    const startExitVideo = () => {
-      console.log("useEffect triggered with exitEnabled:", exitEnabled);
-
-      if (!exitEnabled) return;
-
-      try {
-        // Connect to the main socket without namespace specification
-        exitSocket.current = io(`${EXIT_URL}`, {
-          reconnection: true,
-          reconnectionAttempts: 5,
-          timeout: 10000,
-        });
-
-        exitSocket.current.on("connect", () => {
-          console.log("Exit socket connected successfully");
-          // Emit the start event to main namespace
-          exitSocket.current?.emit("start_exit_video", {
-            camera_index: selectedExitCamera,
-          });
-        });
-
-        exitSocket.current.on("connect_error", (socketError: Error) => {
-          console.error("Exit socket connection error:", socketError);
-        });
-
-        // Listen for frames on the main namespace
-        exitSocket.current.on(
-          "exit_video_frame",
-          (data: ExitVideoFrameData) => {
-            if (!data) {
-              console.error("No exit data received");
-              return;
-            }
-
-            // Assign exit frame
-            if (data?.exit_frame && exitVideoRef.current) {
-              exitVideoRef.current.src = `data:image/jpeg;base64,${data.exit_frame}`;
-            }
-
-            // Process exit detections - safely handle potential undefined values
-            if (data.exit_detections && data.exit_detections.length > 0) {
-              try {
-                // Find most confident detection with safer filtering
-                const mostConfidentDetection = data.exit_detections.reduce(
-                  (prev, current) => {
-                    if (!current) return prev;
-                    if (!prev) return current;
-                    return (current.confidence || 0) > (prev.confidence || 0)
-                      ? current
-                      : prev;
-                  }
-                );
-
-                if (mostConfidentDetection) {
-                  console.log(
-                    "Exit Detected Vehicle:",
-                    mostConfidentDetection.label
-                  );
-
-                  // Extract plate information safely
-                  const plates = mostConfidentDetection.plates || [];
-                  const plateText = Array.isArray(plates)
-                    ? plates
-                        .filter(Boolean)
-                        .map((plate) => plate?.ocr_text || "")
-                        .filter(Boolean)
-                        .join(", ")
-                    : "";
-
-                  setExitDetectionData({
-                    vehicleType: mostConfidentDetection.label || "Unknown",
-                    plateNumber: plateText,
-                    colorAnnotation:
-                      mostConfidentDetection.color_annotation || "#FFFFFF",
-                    ocrText: plateText,
-                    annotationLabel:
-                      typeof mostConfidentDetection.label === "number"
-                        ? mostConfidentDetection.label
-                        : 0,
-                  });
-                }
-              } catch (error) {
-                console.error("Error processing detection data:", error);
-              }
-            } else {
-              setExitDetectionData({
-                vehicleType: "No detection",
-                plateNumber: "N/A",
-                colorAnnotation: "N/A",
-                ocrText: "",
-                annotationLabel: 0,
-              });
-            }
-          }
-        );
-
-        exitSocket.current.on("video_error", (data: { error: string }) => {
-          console.error("Exit video error:", data.error);
-          stopExitVideo();
-        });
-
-        // Add debug event to log all incoming events
-        exitSocket.current.onAny((event, ...args) => {
-          console.log(`[Exit Socket] Received event: ${event}`, args);
-        });
-      } catch (error) {
-        console.error("Error in startExitVideo:", error);
-      }
-    };
-    startExitVideo();
-
-    // Clean up function
-    return () => {
-      console.log("Cleaning up video connection...");
-      stopExitVideo();
-    };
-  }, [selectedExitCamera, SERVER_URL]);
-
-  const stopExitVideo = useCallback(() => {
-    try {
-      if (exitSocket.current) {
-        // Set exit enabled to false first
-        setExitEnabled(false);
-
-        // Clear the video frame
-        if (exitVideoRef.current) {
-          exitVideoRef.current.src = "";
-        }
-
-        // Emit stop event and wait briefly before disconnecting
-        exitSocket.current.emit("stop_exit_video", null, () => {
-          // Only disconnect after confirming the stop event was sent
-          exitSocket.current?.disconnect();
-          exitSocket.current = null;
-        });
-      }
-    } catch (error) {
-      console.error("Error stopping exit video:", error);
-    }
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      stopVideo();
-      stopExitVideo();
-    };
-  }, []);
 
   return (
     <div className="min-h-screen bg-white p-8">
@@ -1465,55 +1290,10 @@ const SurveillanceInterface = () => {
           >
             {exitEnabled ? (
               <>
-
                 <Square className="w-4 h-4 mr-2" /> Stop Exit
               </>
             ) : (
               <>
-
-                <Square className="w-4 h-4 mr-2" /> Stop Entry
-              </>
-            ) : (
-              <>
-                <Play className="w-4 h-4 mr-2" /> Start Entry
-              </>
-            )}
-          </Button>
-
-          <Select
-            value={selectedExitCamera}
-            onValueChange={setSelectedExitCamera}
-          >
-            <SelectTrigger className="w-[200px]">
-              <Camera className="w-4 h-4 mr-2" />
-              <SelectValue placeholder="Exit Camera" />
-            </SelectTrigger>
-            <SelectContent>
-              {devices.map((device) => (
-                <SelectItem key={device.deviceId} value={device.deviceId}>
-                  {device.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Button
-            variant={exitEnabled ? "destructive" : "default"}
-            onClick={() => {
-              if (exitEnabled) {
-                stopExitVideo();
-              } else {
-                setExitEnabled(true);
-              }
-            }}
-          >
-            {exitEnabled ? (
-              <>
-                <Square className="w-4 h-4 mr-2" /> Stop Exit
-              </>
-            ) : (
-              <>
-
                 <Play className="w-4 h-4 mr-2" /> Start Exit
               </>
             )}
@@ -1558,19 +1338,6 @@ const SurveillanceInterface = () => {
             <img
               ref={entryVideoRef}
               alt="Camera Stream"
-              className="w-full h-full object-contain"
-            />
-          </CardContent>
-        </Card>
-        {/* Exit Video Stream - Right Side */}
-        <Card className="w-full">
-          <CardHeader>
-            <CardTitle>Exit Stream</CardTitle>
-          </CardHeader>
-          <CardContent className="relative w-full h-[700px] bg-gray-50 rounded-lg overflow-hidden">
-            <img
-              ref={exitVideoRef}
-              alt="Exit Camera Stream"
               className="w-full h-full object-contain"
             />
           </CardContent>
@@ -1620,48 +1387,6 @@ const SurveillanceInterface = () => {
               </div>
             </CardContent>
           </Card>
-          <Card className="col-span-1">
-            <CardContent className="pt-4 pb-4">
-              <p className="text-xs font-medium text-gray-500">
-                Exit Vehicle Type
-              </p>
-              <p className="text-lg font-bold">
-                {exitDetectionData.vehicleType}
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card className="col-span-1">
-            <CardContent className="pt-4 pb-4">
-              <p className="text-xs font-medium text-gray-500">
-                Exit Plate Number
-              </p>
-              <p className="text-lg font-bold">{exitDetectionData.ocrText}</p>
-            </CardContent>
-          </Card>
-
-          <Card className="col-span-1">
-            <CardContent className="pt-4 pb-4">
-              <p className="text-xs font-medium text-gray-500">
-                Exit Detected Color
-              </p>
-              <div className="flex items-center space-x-2">
-                <div
-                  className="w-6 h-6 rounded-full border border-gray-400"
-                  style={{
-                    backgroundColor:
-                      exitDetectionData.colorAnnotation || "#ffffff",
-                  }}
-                />
-                <p
-                  className="text-lg font-bold"
-                  style={{ color: exitDetectionData.colorAnnotation }}
-                >
-                  {exitDetectionData.colorAnnotation}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
         </div>
         <UnassignedVehiclesTable />
         {/* Parking Slots Section - Now Full Width below entry stream */}
@@ -1671,6 +1396,7 @@ const SurveillanceInterface = () => {
           </CardHeader>
           <CardContent className="p-6">
             <div className="flex flex-col space-y-6">
+              {/* Parking Slots Visual Component */}
               <ParkingSlotsComponent
                 parkingDataLeft={parkingDataLeft}
                 parkingDataRight={parkingDataRight}
@@ -1737,7 +1463,6 @@ const SurveillanceInterface = () => {
             </div>
           </CardContent>
         </Card>
-
         <MotorcycleDialog
           showDialog={showMotorcycleDialog}
           setShowDialog={setShowMotorcycleDialog}
@@ -1775,9 +1500,7 @@ const SurveillanceInterface = () => {
               <DialogTitle>
                 {selectedSlot?.section.includes("bike")
                   ? `Manage Bike Area ${
-                      selectedSlot.section === "bike area left"
-                        ? "Left"
-                        : "Right"
+                      selectedSlot.section === "bike area left" ? "Left" : "Right"
                     }`
                   : selectedSlot?.section === "elevated parking"
                   ? "Manage Motor Parking Lot"

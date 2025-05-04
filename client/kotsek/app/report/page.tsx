@@ -122,8 +122,10 @@ const IncidentReportPage = () => {
   const onSubmit = async (data: z.infer<typeof incidentSchema>) => {
     setLoading(true);
     try {
+      const id = crypto.randomUUID();
       const { error } = await supabase.from("incidents").insert([
         {
+          id,
           incident_name: data.incident_name,
           date: data.date.toISOString().split("T")[0],
           time: data.time,
