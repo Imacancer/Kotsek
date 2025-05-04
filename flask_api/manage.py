@@ -50,23 +50,28 @@ def create_app():
     # Initialize SocketIO and any additional services
     socketio = SocketIO(app, ping_timeout=1, ping_interval=2, 
                         cors_allowed_origins="*", max_http_buffer_size=1e8)
-    cctv = "rtsp://admincctv:admincctv@192.168.0.134/stream1"
+    cctv = "rtmp://host.docker.internal:1935/live/test"
 
-    video_path_exit = "./sample/mamamo.mov"  # Update path as necessary
-    video_path_entry = "./sample/1 entry.mp4"
-    entry_video_processor = EntryVideoProcessor(socketio, cctv) 
+    video_path_exit = "./sample/2exitnew.mp4"  # Update path as necessary
+    video_path_entry = "./sample/1entrynew.mp4"
+    entry_video_processor = EntryVideoProcessor(socketio, video_path_entry) 
     exit_video_processor = VideoProcessor(socketio, video_path_exit)
     app.entry_video_processor = entry_video_processor
     app.exit_video_processor = exit_video_processor
 
-    app.set_active_guard = lambda guard_id: app.video_processor.set_active_guard(guard_id)
+    app.set_active_guard = lambda guard_id: (
+        app.entry_video_processor.set_active_guard(guard_id),
+        app.exit_video_processor.set_active_guard(guard_id)
+    )
+
+
     
     # Add a property to get the active guard ID
     @property
     def active_guard_id(app):
-        return app.video_processor.active_guard_id
+        return app.entry_video_processor.active_guard_id
     
-    app.active_guard_id = property(lambda app: app.video_processor.active_guard_id)
+    app.active_guard_id = property(lambda app: app.entry_video_processor.active_guard_id)
 
 
     @socketio.on("start_entry_video")

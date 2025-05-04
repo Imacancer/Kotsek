@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import create_engine
 from db.db import db
 from supabase import create_client, Client
-
+import subprocess
 # Import models
 from models.vehicle_entry import VehicleEntry
 from models.vehicle_exit import VehicleExit
@@ -50,7 +50,8 @@ class VideoProcessor:
         self.producer_thread = None
         self.processor_thread = None
         self.emit_thread = None
-        self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=True)
+        self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
+        self.model_path = model_path
         
         # Tracking variables
         self.line_x = 250  # Line position for counting
@@ -107,6 +108,7 @@ class VideoProcessor:
             
             roi = image[y1:y2, x1:x2]
             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 255), 2)
             thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                         cv2.THRESH_BINARY, 11, 2)
             
@@ -123,7 +125,15 @@ class VideoProcessor:
     
     @staticmethod
     def is_valid_plate_format(plate_text):
-        return re.fullmatch(r"[A-Z]{3} \d{4}", plate_text.strip()) is not None
+        # Remove all non-alphanumeric characters (e.g., -, ., spaces)
+        cleaned = re.sub(r'[^A-Za-z0-9]', '', plate_text).upper()
+
+        # Check if it matches the pattern ABC1234
+        if re.fullmatch(r'[A-Z]{3}\d{4}', cleaned):
+            # Format it as ABC 1234
+            formatted = f"{cleaned[:3]} {cleaned[3:]}"
+            return formatted
+        return None
     
     def upload_vehicle_entry(self, plate_text, plate_confidence, entry_time, screenshot_frame, timestamp_str, vehicle_type, hex_color):
         try:
@@ -286,8 +296,14 @@ class VideoProcessor:
 
 
 
-    def process_frame(self, frame, size=(640, 480)):
-        frame = cv2.resize(frame, size)
+    def process_frame(self, frame, size=None):
+        filtered_boxes = []
+        filtered_track_ids = []
+        filtered_confidences = []
+        filtered_class_indices = []
+        print(self.active_guard_id)
+        if size:
+            frame = cv2.resize(frame, size)
         original_frame = frame.copy()  # Clean version for screenshot
         best_plate_frame = None
 
@@ -295,7 +311,7 @@ class VideoProcessor:
         detections = []
 
         target_classes = {'car', 'motorcycle', 'bike', 'bicycle'}
-        plate_line_x = 140  # Detection boundary
+        plate_line_x = 320  # Detection boundary
 
         # Draw plate detection boundary
         cv2.line(frame, (plate_line_x, 0), (plate_line_x, frame.shape[0]), (0, 255, 0), 2)
@@ -349,10 +365,16 @@ class VideoProcessor:
                             plate_coords = plate_box.xyxy.cpu().numpy().tolist()[0]
                             px1, py1, px2, py2 = map(int, plate_coords)
                             plate_roi = roi[py1:py2, px1:px2]
-                            plate_text = self.extract_text_from_roi(plate_roi, [[0, 0, px2-px1, py2-py1]])
+                            raw_text = self.extract_text_from_roi(plate_roi, [[0, 0, px2-px1, py2-py1]])
 
-                            if plate_text.strip() == "":
+                            if raw_text.strip() == "":
                                 continue
+                            # ✅ Normalize plate format: ABC1234 → ABC 1234
+                            cleaned = re.sub(r'[^A-Za-z0-9]', '', raw_text).upper()
+                            if re.fullmatch(r'[A-Z]{3}\d{4}', cleaned):
+                                plate_text = f"{cleaned[:3]} {cleaned[3:]}"
+                            else:
+                                plate_text = raw_text  # fallback if it doesn't match
 
                             new_plate = {
                                 "label": "Plate",
@@ -431,7 +453,7 @@ class VideoProcessor:
                                 self.upload_vehicle_exit(
                                     plate_text=best_plate["ocr_text"],
                                     plate_confidence=best_plate["confidence"],
-                                    entry_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
+                                    exit_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
                                     timestamp_str=timestamp_str,
                                     screenshot_frame=info['screenshot'],
                                     vehicle_type=info['label'],
@@ -470,18 +492,34 @@ class VideoProcessor:
 
         return annotated_frame, detections
 
-    def frame_producer(self, cap):
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_delay = 1.0 / fps if fps > 0 else 0.033
+    def frame_producer_ffmpeg(self):
+        while self.running and self.ffmpeg_process and self.ffmpeg_process.stdout:
+            raw_frame = self.ffmpeg_process.stdout.read(self.frame_size)
+            if not raw_frame:
+                continue
+            frame = np.frombuffer(raw_frame, np.uint8).reshape((self.frame_height, self.frame_width, 3))
+
+            while not self.frame_queue.empty():
+                self.frame_queue.get_nowait()
+            self.frame_queue.put(frame)
+
+            time.sleep(0.03)
+    def frame_producer_opencv(self):
         while self.running:
-            ret, frame = cap.read()
+            ret, frame = self.video_capture.read()
             if not ret:
+                print("🎞️ End of video or read failed.")
                 break
-            while self.frame_queue.full() and self.running:
-                time.sleep(0.01)
-            if not self.frame_queue.full():
-                self.frame_queue.put(frame)
-            time.sleep(frame_delay)
+
+            frame = cv2.resize(frame, (self.frame_width, self.frame_height))
+
+            while not self.frame_queue.empty():
+                self.frame_queue.get_nowait()
+            self.frame_queue.put(frame)
+
+            time.sleep(1 / 30)  # ~30 FPS
+
+
 
     def frame_processor(self):
         while self.running:
@@ -489,7 +527,7 @@ class VideoProcessor:
                 time.sleep(0.01)
                 continue
             frame = self.frame_queue.get()
-            annotated_frame, detections = self.process_frame(frame)
+            annotated_frame, detections = self.process_frame(frame, size=(960, 540))
             encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 60]
             _, buffer = cv2.imencode('.jpg', annotated_frame, encode_param)
             frame_data = base64.b64encode(buffer).decode('utf-8')
@@ -527,32 +565,98 @@ class VideoProcessor:
     def start(self):
         if self.running:
             return
+
         self.running = True
-        self.video_capture = cv2.VideoCapture(self.video_path)
-        if not self.video_capture.isOpened():
-            self.socketio.emit("video_error", {"error": "Video file not available"})
-            self.running = False
-            return
-        self.video_capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-        self.producer_thread = Thread(target=self.frame_producer, args=(self.video_capture,))
+        self.frame_width = 960
+        self.frame_height = 540
+        self.frame_size = self.frame_width * self.frame_height * 3
+        if self.ocr is None:
+            self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
+        if not hasattr(self, 'model') or self.model is None:
+            self.model = YOLO(self.model_path)  # or self.model_path if you've saved it
+
+
+        is_rtsp = self.video_path.startswith("rtsp://")
+        self.ffmpeg_process = None
+        
+
+        if is_rtsp:
+            print("📡 Starting RTSP stream using FFmpeg pipe...")
+
+            self.ffmpeg_cmd = [
+                'ffmpeg',
+                '-rtsp_transport', 'tcp',
+                '-i', self.video_path,
+                '-vf', 'scale=640:480',
+                '-f', 'image2pipe',
+                '-pix_fmt', 'bgr24',
+                '-vcodec', 'rawvideo',
+                '-'
+            ]
+
+            try:
+                self.ffmpeg_process = subprocess.Popen(
+                    self.ffmpeg_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    bufsize=10**8
+                )
+            except Exception as e:
+                print(f"❌ FFmpeg launch failed: {e}")
+                self.running = False
+                return
+
+            self.producer_thread = Thread(target=self.frame_producer_ffmpeg)
+        else:
+            print("📼 Starting video file using OpenCV...")
+            self.video_capture = cv2.VideoCapture(self.video_path)
+            if not self.video_capture.isOpened():
+                print("❌ Failed to open video file.")
+                self.running = False
+                return
+            self.producer_thread = Thread(target=self.frame_producer_opencv)
+
         self.processor_thread = Thread(target=self.frame_processor)
         self.emit_thread = Thread(target=self.emit_frames)
-        self.producer_thread.daemon = True
-        self.processor_thread.daemon = True
-        self.emit_thread.daemon = True
-        self.producer_thread.start()
-        self.processor_thread.start()
-        self.emit_thread.start()
-        print("Video processing started.")
 
+        for t in [self.producer_thread, self.processor_thread, self.emit_thread]:
+            t.daemon = True
+            t.start()
+
+        print("✅ Video processing started.")
     def stop(self):
         if not self.running:
             return
+
         self.running = False
-        if self.video_capture:
+
+        # Release video resources
+        if hasattr(self, "ffmpeg_process") and self.ffmpeg_process:
+            self.ffmpeg_process.terminate()
+            self.ffmpeg_process.wait()
+            self.ffmpeg_process = None
+
+        if hasattr(self, "video_capture") and self.video_capture:
             self.video_capture.release()
-        print("Video processing stopped.")
-        print("Final counts:", dict(self.class_counts))
+            self.video_capture = None
+
+        # Clean up OCR to reset its internal state
+        if self.ocr:
+            del self.ocr
+            self.ocr = None
+
+        # Clear detection-related data
+        self.crossed_ids.clear()
+        self.detection_history.clear()
+        self.logged_lost_ids.clear()
+        self.plate_buffer.clear()
+        self.class_counts.clear()
+        self.model = None
+
+        print("🛑 Video processing stopped and buffers cleared.")
+
+
+
 
 
 
@@ -569,7 +673,8 @@ class EntryVideoProcessor:
         self.producer_thread = None
         self.processor_thread = None
         self.emit_thread = None
-        self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=True)
+        self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
+        self.model_path = model_path
         
         # Tracking variables
         self.line_x = 250  # Line position for counting
@@ -590,45 +695,6 @@ class EntryVideoProcessor:
         self.active_guard_id = None
 
 
-    def start(self):
-            if self.running:
-                return
-
-            self.running = True
-
-            # Force TCP for RTSP if applicable
-            if self.video_path.startswith("rtsp://"):
-                video_url = self.video_path + "?rtsp_transport=tcp"
-            else:
-                video_url = self.video_path
-
-            self.video_capture = cv2.VideoCapture(video_url)
-
-            # Wait briefly for the camera to initialize
-            retries = 10
-            for attempt in range(retries):
-                if self.video_capture.isOpened():
-                    break
-                print(f"⏳ Attempt {attempt + 1}/{retries} to connect to stream...")
-                time.sleep(1)
-
-            if not self.video_capture.isOpened():
-                print("❌ Unable to open video stream")
-                self.socketio.emit("video_error", {"error": "Failed to open stream"})
-                self.running = False
-                return
-
-            self.video_capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-            self.producer_thread = Thread(target=self.frame_producer, args=(self.video_capture,))
-            self.processor_thread = Thread(target=self.frame_processor)
-            self.emit_thread = Thread(target=self.emit_frames)
-            self.producer_thread.daemon = True
-            self.processor_thread.daemon = True
-            self.emit_thread.daemon = True
-            self.producer_thread.start()
-            self.processor_thread.start()
-            self.emit_thread.start()
-            print("📡 Video stream started.")
 
     def set_active_guard(self, guard_id):
         """Set the active guard for this detection session"""
@@ -667,6 +733,7 @@ class EntryVideoProcessor:
             
             roi = image[y1:y2, x1:x2]
             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 255), 2)
             thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                         cv2.THRESH_BINARY, 11, 2)
             
@@ -683,7 +750,15 @@ class EntryVideoProcessor:
     
     @staticmethod
     def is_valid_plate_format(plate_text):
-        return re.fullmatch(r"[A-Z]{3} \d{4}", plate_text.strip()) is not None
+        # Remove all non-alphanumeric characters (e.g., -, ., spaces)
+        cleaned = re.sub(r'[^A-Za-z0-9]', '', plate_text).upper()
+
+        # Check if it matches the pattern ABC1234
+        if re.fullmatch(r'[A-Z]{3}\d{4}', cleaned):
+            # Format it as ABC 1234
+            formatted = f"{cleaned[:3]} {cleaned[3:]}"
+            return formatted
+        return None
     
     def upload_vehicle_entry(self, plate_text, plate_confidence, entry_time, screenshot_frame, timestamp_str, vehicle_type, hex_color):
         try:
@@ -767,8 +842,14 @@ class EntryVideoProcessor:
         except Exception as e:
             print(f"❌ Exception in upload_vehicle_entry: {e}")
 
-    def process_frame(self, frame, size=(640, 480)):
-        frame = cv2.resize(frame, size)
+    def process_frame(self, frame, size=None):
+        filtered_boxes = []
+        filtered_track_ids = []
+        filtered_confidences = []
+        filtered_class_indices = []
+        print(self.active_guard_id)
+        if size:
+            frame = cv2.resize(frame, size)
         original_frame = frame.copy()  # Clean version for screenshot
         best_plate_frame = None
 
@@ -830,10 +911,16 @@ class EntryVideoProcessor:
                             plate_coords = plate_box.xyxy.cpu().numpy().tolist()[0]
                             px1, py1, px2, py2 = map(int, plate_coords)
                             plate_roi = roi[py1:py2, px1:px2]
-                            plate_text = self.extract_text_from_roi(plate_roi, [[0, 0, px2-px1, py2-py1]])
+                            raw_text = self.extract_text_from_roi(plate_roi, [[0, 0, px2-px1, py2-py1]])
 
-                            if plate_text.strip() == "":
+                            if raw_text.strip() == "":
                                 continue
+                            # ✅ Normalize plate format: ABC1234 → ABC 1234
+                            cleaned = re.sub(r'[^A-Za-z0-9]', '', raw_text).upper()
+                            if re.fullmatch(r'[A-Z]{3}\d{4}', cleaned):
+                                plate_text = f"{cleaned[:3]} {cleaned[3:]}"
+                            else:
+                                plate_text = raw_text  # fallback if it doesn't match
 
                             new_plate = {
                                 "label": "Plate",
@@ -951,6 +1038,33 @@ class EntryVideoProcessor:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         return annotated_frame, detections
+    def frame_producer_ffmpeg(self):
+        while self.running and self.ffmpeg_process and self.ffmpeg_process.stdout:
+            raw_frame = self.ffmpeg_process.stdout.read(self.frame_size)
+            if not raw_frame:
+                continue
+            frame = np.frombuffer(raw_frame, np.uint8).reshape((self.frame_height, self.frame_width, 3))
+
+            while not self.frame_queue.empty():
+                self.frame_queue.get_nowait()
+            self.frame_queue.put(frame)
+
+            time.sleep(0.03)
+    def frame_producer_opencv(self):
+        while self.running:
+            ret, frame = self.video_capture.read()
+            if not ret:
+                print("🎞️ End of video or read failed.")
+                break
+
+            frame = cv2.resize(frame, (self.frame_width, self.frame_height))
+
+            while not self.frame_queue.empty():
+                self.frame_queue.get_nowait()
+            self.frame_queue.put(frame)
+
+            time.sleep(1 / 30)  # ~30 FPS
+
 
     def frame_producer(self, cap):
         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -971,8 +1085,8 @@ class EntryVideoProcessor:
                 time.sleep(0.01)
                 continue
             frame = self.frame_queue.get()
-            annotated_frame, detections = self.process_frame(frame)
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 60]
+            annotated_frame, detections = self.process_frame(frame, size=(960, 540))
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
             _, buffer = cv2.imencode('.jpg', annotated_frame, encode_param)
             frame_data = base64.b64encode(buffer).decode('utf-8')
             self.result_queue.put({
@@ -1009,29 +1123,87 @@ class EntryVideoProcessor:
     def start(self):
         if self.running:
             return
+
         self.running = True
-        self.video_capture = cv2.VideoCapture(self.video_path)
-        if not self.video_capture.isOpened():
-            self.socketio.emit("video_error", {"error": "Video file not available"})
-            self.running = False
-            return
-        self.video_capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-        self.producer_thread = Thread(target=self.frame_producer, args=(self.video_capture,))
+        self.frame_width = 960
+        self.frame_height = 540
+        self.frame_size = self.frame_width * self.frame_height * 3
+        if self.ocr is None:
+            self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
+
+        is_rtsp = isinstance(self.video_path, str) and self.video_path.startswith("rtsp://")
+        self.ffmpeg_process = None
+
+        if is_rtsp:
+            print("📡 Starting RTSP stream using FFmpeg pipe...")
+
+            self.ffmpeg_cmd = [
+                'ffmpeg',
+                '-rtsp_transport', 'tcp',
+                '-i', self.video_path,
+                '-vf', 'scale=640:480',
+                '-f', 'image2pipe',
+                '-pix_fmt', 'bgr24',
+                '-vcodec', 'rawvideo',
+                '-'
+            ]
+
+            try:
+                self.ffmpeg_process = subprocess.Popen(
+                    self.ffmpeg_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    bufsize=10**8
+                )
+            except Exception as e:
+                print(f"❌ FFmpeg launch failed: {e}")
+                self.running = False
+                return
+
+            self.producer_thread = Thread(target=self.frame_producer_ffmpeg)
+        else:
+            print("📼 Starting video file using OpenCV...")
+            self.video_capture = cv2.VideoCapture(self.video_path)
+            if not self.video_capture.isOpened():
+                print("❌ Failed to open video file.")
+                self.running = False
+                return
+            self.producer_thread = Thread(target=self.frame_producer_opencv)
+
         self.processor_thread = Thread(target=self.frame_processor)
         self.emit_thread = Thread(target=self.emit_frames)
-        self.producer_thread.daemon = True
-        self.processor_thread.daemon = True
-        self.emit_thread.daemon = True
-        self.producer_thread.start()
-        self.processor_thread.start()
-        self.emit_thread.start()
-        print("Video processing started.")
 
+        for t in [self.producer_thread, self.processor_thread, self.emit_thread]:
+            t.daemon = True
+            t.start()
+
+        print("✅ Video processing started.")
     def stop(self):
         if not self.running:
             return
+
         self.running = False
-        if self.video_capture:
+
+        # Release video resources
+        if hasattr(self, "ffmpeg_process") and self.ffmpeg_process:
+            self.ffmpeg_process.terminate()
+            self.ffmpeg_process.wait()
+            self.ffmpeg_process = None
+
+        if hasattr(self, "video_capture") and self.video_capture:
             self.video_capture.release()
-        print("Video processing stopped.")
-        print("Final counts:", dict(self.class_counts))
+            self.video_capture = None
+
+        # Clean up OCR to reset its internal state
+        if self.ocr:
+            del self.ocr
+            self.ocr = None
+
+        # Clear detection-related data
+        self.crossed_ids.clear()
+        self.detection_history.clear()
+        self.logged_lost_ids.clear()
+        self.plate_buffer.clear()
+        self.class_counts.clear()
+
+        print("🛑 Video processing stopped and buffers cleared.")
