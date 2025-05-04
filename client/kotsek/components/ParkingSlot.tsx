@@ -26,7 +26,8 @@ interface ParkingSlotProps {
     section: string,
     lot_id?: string,
     status?: string,
-    current_vehicle_id?: string
+    current_vehicle_id?: string,
+    slots?: ParkingSlot[] // Add slots parameter
   ) => void;
   current_vehicle_id?: string;
 }
@@ -36,6 +37,9 @@ interface ParkingSlotsComponentProps {
   parkingDataCenter: ParkingSlot[];
   parkingDataRight: ParkingSlot[];
   parkingDataTop: ParkingSlot[];
+  parkingDataBikeLeft: ParkingSlot[]; // Add these new props
+  parkingDataBikeRight: ParkingSlot[];
+  parkingDataMotor: ParkingSlot[];
   totalSpaces: number;
   occupiedSpaces: number;
   reservedSpaces: number;
@@ -47,7 +51,8 @@ interface ParkingSlotsComponentProps {
     section: string,
     lot_id?: string,
     status?: string,
-    current_vehicle_id?: string
+    current_vehicle_id?: string,
+    slots?: ParkingSlot[] // Add slots parameter
   ) => void;
 }
 
@@ -57,6 +62,8 @@ interface BikeAreaData {
   total: number;
   occupied: number;
   lot_id: string;
+  section: string;
+  slots?: ParkingSlot[];
 }
 
 interface MotorParkingData {
@@ -65,6 +72,8 @@ interface MotorParkingData {
   total: number;
   occupied: number;
   lot_id: string;
+  section: string;
+  slots?: ParkingSlot[];
 }
 
 const ParkingSlotItem = ({
@@ -95,7 +104,7 @@ const ParkingSlotItem = ({
     <CardContent className="p-2 flex items-center justify-center">
       <span className="text-sm font-bold">{slot_number}</span>
       {plate_number && (
-        <span className="absolute bottom-1 text-xs truncate max-w-full px-1">
+        <span className="flex bottom-1 text-xs truncate max-w-full px-1">
           {plate_number}
         </span>
       )}
@@ -108,6 +117,9 @@ const ParkingSlotsComponent = ({
   parkingDataLeft,
   parkingDataCenter,
   parkingDataRight,
+  parkingDataBikeLeft,
+  parkingDataBikeRight,
+  parkingDataMotor,
   totalSpaces,
   occupiedSpaces,
   vacantSpaces,
@@ -115,31 +127,45 @@ const ParkingSlotsComponent = ({
 }: ParkingSlotsComponentProps) => {
   const [screenSize, setScreenSize] = useState("lg");
 
-  // Bike areas data with total occupancy
-  const bikeAreas: BikeAreaData[] = [
+  const bikeAreaLeft: BikeAreaData[] = [
     {
-      id: "bike-left",
+      id: parkingDataBikeLeft[0]?.id || "bike area left",
       name: "Bike Area Left",
-      total: 14,
-      occupied: 2,
-      lot_id: "PE1_Bike",
+      total: parkingDataBikeLeft?.length || 0,
+      occupied:
+        parkingDataBikeLeft?.filter((slot) => slot.status === "occupied")
+          .length || 0,
+      lot_id: parkingDataBikeLeft[0]?.lot_id || "PE1_Bike",
+      section: "bike area left",
+      slots: parkingDataBikeLeft,
     },
+  ];
+  // Bike areas data with total occupancy
+  const bikeAreaRight: BikeAreaData[] = [
     {
-      id: "bike-right",
+      id: parkingDataBikeRight[0]?.id || "bike area right",
       name: "Bike Area Right",
-      total: 14,
-      occupied: 3,
-      lot_id: "PE2_Bike",
+      total: parkingDataBikeRight?.length || 0,
+      occupied:
+        parkingDataBikeRight?.filter((slot) => slot.status === "occupied")
+          .length || 0,
+      lot_id: parkingDataBikeRight[0]?.lot_id || "PE1_Bike",
+      section: "bike area right",
+      slots: parkingDataBikeRight,
     },
   ];
 
   // Motor parking lot data with total occupancy
   const motorParkingLot: MotorParkingData = {
-    id: "motor-lot",
+    id: parkingDataMotor[0]?.id || "elevated parking",
     name: "Motor Parking Lot",
-    total: 30,
-    occupied: 15,
-    lot_id: "Elevated_MCP",
+    total: parkingDataMotor?.length || 0,
+    occupied:
+      parkingDataMotor?.filter((slot) => slot.status === "occupied").length ||
+      0,
+    lot_id: parkingDataMotor[0]?.lot_id || "Elevated_MCP",
+    section: "elevated parking",
+    slots: parkingDataMotor,
   };
 
   // Sort parking data by slot number to ensure consistent placement
@@ -308,26 +334,46 @@ const ParkingSlotsComponent = ({
               {/* Bike Left Area */}
               <div
                 className="w-full h-full flex flex-col justify-center items-center row-start-1 border border-dashed border-black bg-gray-100 rounded-lg cursor-pointer hover:bg-gray-200 transition-colors"
-                onClick={() => onSlotClick("0", 0, "bike-left", "PE1_Bike")}
+                onClick={() =>
+                  onSlotClick(
+                    bikeAreaLeft[0].id,
+                    0,
+                    bikeAreaLeft[0].section,
+                    bikeAreaLeft[0].lot_id,
+                    "available",
+                    undefined,
+                    bikeAreaLeft[0].slots // Pass slots data
+                  )
+                }
               >
                 <p className="font-bold text-center text-base">
                   Bike Area Left
                 </p>
                 <p className="text-sm font-medium mt-1">
-                  {bikeAreas[0].occupied}/{bikeAreas[0].total}
+                  {bikeAreaLeft[0].occupied}/{bikeAreaLeft[0].total}
                 </p>
               </div>
 
               {/* Bike Right Area */}
               <div
                 className="w-full h-full flex flex-col justify-center items-center col-start-8 border border-dashed border-black bg-gray-100 rounded-lg cursor-pointer hover:bg-gray-200 transition-colors"
-                onClick={() => onSlotClick("0", 0, "bike-right", "PE2_Bike")}
+                onClick={() =>
+                  onSlotClick(
+                    bikeAreaRight[0].id,
+                    0,
+                    bikeAreaRight[0].section,
+                    bikeAreaRight[0].lot_id,
+                    "available",
+                    undefined,
+                    bikeAreaRight[0].slots // Pass slots data
+                  )
+                }
               >
                 <p className="font-bold text-center text-base">
                   Bike Area Right
                 </p>
                 <p className="text-sm font-medium mt-1">
-                  {bikeAreas[1].occupied}/{bikeAreas[1].total}
+                  {bikeAreaRight[0].occupied}/{bikeAreaRight[0].total}
                 </p>
               </div>
 
@@ -501,13 +547,26 @@ const ParkingSlotsComponent = ({
                 className={`w-full h-full flex flex-col justify-center items-center row-start-7 row-end-10 col-start-3 col-end-8 border border-black bg-gray-100 rounded-lg cursor-pointer hover:bg-gray-200 transition-colors ${
                   screenSize === "xl" ? "mt-8" : "mt-6"
                 }`}
-                onClick={() => onSlotClick("0", 0, "motor-lot", "Elevated_MCP")}
+                onClick={() =>
+                  onSlotClick(
+                    motorParkingLot.id,
+                    0,
+                    motorParkingLot.section,
+                    motorParkingLot.lot_id,
+                    "available",
+                    undefined,
+                    motorParkingLot.slots // Pass slots data
+                  )
+                }
               >
                 <p className="font-bold text-center text-base">
                   Motor Parking Lot
                 </p>
                 <p className="text-sm font-medium mt-1">
-                  {motorParkingLot.occupied}/{motorParkingLot.total}
+                  {motorParkingLot.slots?.filter(
+                    (slot) => slot.status === "occupied"
+                  ).length || 0}
+                  /{motorParkingLot.slots?.length || 0}
                 </p>
               </div>
 
@@ -573,16 +632,15 @@ const ParkingSlotsComponent = ({
                     <Bike className="w-14 h-14" />
                   </div>
                   <p className="text-6xl font-bold text-green-600">
-                    {bikeAreas.reduce(
-                      (acc, area) => acc + (area.total - area.occupied),
-                      0
-                    )}
+                    {bikeAreaLeft[0].total -
+                      bikeAreaLeft[0].occupied +
+                      (bikeAreaRight[0].total - bikeAreaRight[0].occupied)}
                   </p>
                 </div>
                 <p className="text-sm text-gray-500">
                   {Math.round(
-                    (bikeAreas.reduce((acc, area) => acc + area.occupied, 0) /
-                      bikeAreas.reduce((acc, area) => acc + area.total, 0)) *
+                    ((bikeAreaLeft[0].occupied + bikeAreaRight[0].occupied) /
+                      (bikeAreaLeft[0].total + bikeAreaRight[0].total)) *
                       100
                   )}
                   % occupied

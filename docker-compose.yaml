@@ -12,9 +12,7 @@ services:
     networks:
       - app-network
 
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
+    
 
 
   client:
