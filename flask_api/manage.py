@@ -52,7 +52,7 @@ def create_app():
                         cors_allowed_origins="*", max_http_buffer_size=1e8)
     cctv = "rtmp://host.docker.internal:1935/live/test"
 
-    video_path_exit = "./sample/2exitnew.mp4"  # Update path as necessary
+    video_path_exit = "./sample/1exitnew.mp4"  # Update path as necessary
     video_path_entry = "./sample/1entrynew.mp4"
     entry_video_processor = EntryVideoProcessor(socketio, video_path_entry) 
     exit_video_processor = VideoProcessor(socketio, video_path_exit)
