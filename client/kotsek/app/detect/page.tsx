@@ -130,24 +130,11 @@ const SurveillanceInterface = () => {
   const [selectedCamera, setSelectedCamera] = useState<string>("0");
   const [selectedExitCamera, setSelectedExitCamera] = useState<string>("0");
   const [enabled, setEnabled] = useState(false);
-  const [exitEnabled, setExitEnabled] = useState(false);
   const socket = useRef<Socket | null>(null);
-<<<<<<< HEAD
   const exitSocket = useRef<Socket | null>(null);
-=======
 
   const [entryEnabled, setEntryEnabled] = useState(false);
   const [exitEnabled, setExitEnabled] = useState(false);
-
-
-  const [exitDetectionData, setExitDetectionData] = useState<EntryDetectionData>({
-    vehicleType: "",
-    plateNumber: "",
-    colorAnnotation: "",
-    ocrText: "",
-    annotationLabel: 0,
-  });
->>>>>>> origin/for-analytics
   const [guards, setGuards] = useState<Guard[]>([]);
   const [selectedGuard, setSelectedGuard] = useState<string>("");
   const [activeGuard, setActiveGuard] = useState<Guard | null>(null);
@@ -1332,51 +1319,66 @@ const SurveillanceInterface = () => {
 
                   socket.current.on("connect", () => {
                     console.log("Socket reconnected (entry)");
-                    socket.current?.emit("start_entry_video", { camera_index: selectedCamera });
+                    socket.current?.emit("start_entry_video", {
+                      camera_index: selectedCamera,
+                    });
                   });
 
                   socket.current.on("connect_error", (socketError: Error) => {
-                    console.error("Socket connection error (entry):", socketError);
+                    console.error(
+                      "Socket connection error (entry):",
+                      socketError
+                    );
                   });
 
-                  socket.current.on("entry_video_frame", (data: VideoFrameData) => {
-                    if (data?.entrance_frame && entryVideoRef.current) {
-                      entryVideoRef.current.src = `data:image/jpeg;base64,${data.entrance_frame}`;
-                    }
+                  socket.current.on(
+                    "entry_video_frame",
+                    (data: VideoFrameData) => {
+                      if (data?.entrance_frame && entryVideoRef.current) {
+                        entryVideoRef.current.src = `data:image/jpeg;base64,${data.entrance_frame}`;
+                      }
 
-                    if (data.entrance_detections?.length > 0) {
-                      const mostConfidentDetection = data.entrance_detections.reduce(
-                        (prev, current) =>
-                          current.confidence > prev.confidence ? current : prev
-                      );
+                      if (data.entrance_detections?.length > 0) {
+                        const mostConfidentDetection =
+                          data.entrance_detections.reduce((prev, current) =>
+                            current.confidence > prev.confidence
+                              ? current
+                              : prev
+                          );
 
-                      const PlateNum =
-                        mostConfidentDetection.plates
-                          ?.map((plate) => plate.ocr_text)
-                          .join(", ") || "";
-
-                      setEntryDetectionData({
-                        vehicleType: mostConfidentDetection.label,
-                        plateNumber: PlateNum,
-                        colorAnnotation: mostConfidentDetection?.color_annotation,
-                        ocrText:
+                        const PlateNum =
                           mostConfidentDetection.plates
-                            .map((plate) => plate.ocr_text)
-                            .join(", ") || "",
-                        annotationLabel: parseInt(mostConfidentDetection.label),
-                      });
-                    } else {
-                      setEntryDetectionData({
-                        vehicleType: "No detection",
-                        plateNumber: "N/A",
-                        colorAnnotation: "N/A",
-                        ocrText: "",
-                        annotationLabel: 0,
-                      });
+                            ?.map((plate) => plate.ocr_text)
+                            .join(", ") || "";
+
+                        setEntryDetectionData({
+                          vehicleType: mostConfidentDetection.label,
+                          plateNumber: PlateNum,
+                          colorAnnotation:
+                            mostConfidentDetection?.color_annotation,
+                          ocrText:
+                            mostConfidentDetection.plates
+                              .map((plate) => plate.ocr_text)
+                              .join(", ") || "",
+                          annotationLabel: parseInt(
+                            mostConfidentDetection.label
+                          ),
+                        });
+                      } else {
+                        setEntryDetectionData({
+                          vehicleType: "No detection",
+                          plateNumber: "N/A",
+                          colorAnnotation: "N/A",
+                          ocrText: "",
+                          annotationLabel: 0,
+                        });
+                      }
                     }
-                  });
+                  );
                 } else {
-                  socket.current.emit("start_entry_video", { camera_index: selectedCamera });
+                  socket.current.emit("start_entry_video", {
+                    camera_index: selectedCamera,
+                  });
                 }
 
                 setEntryEnabled(true);
@@ -1394,36 +1396,10 @@ const SurveillanceInterface = () => {
             )}
           </Button>
 
-<<<<<<< HEAD
-          <Select
-            value={selectedExitCamera}
-            onValueChange={setSelectedExitCamera}
-          >
-            <SelectTrigger className="w-[200px]">
-              <Camera className="w-4 h-4 mr-2" />
-              <SelectValue placeholder="Exit Camera" />
-            </SelectTrigger>
-            <SelectContent>
-              {devices.map((device) => (
-                <SelectItem key={device.deviceId} value={device.deviceId}>
-                  {device.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-=======
-          
-          
->>>>>>> origin/for-analytics
           <Button
             variant={exitEnabled ? "destructive" : "default"}
             onClick={() => {
               if (exitEnabled) {
-<<<<<<< HEAD
-                stopExitVideo();
-              } else {
-=======
                 socket.current?.emit("stop_exit_video");
                 setExitEnabled(false);
               } else {
@@ -1436,54 +1412,71 @@ const SurveillanceInterface = () => {
 
                   socket.current.on("connect", () => {
                     console.log("Socket reconnected (exit)");
-                    socket.current?.emit("start_exit_video", { camera_index: selectedCamera });
+                    socket.current?.emit("start_exit_video", {
+                      camera_index: selectedCamera,
+                    });
                   });
 
                   socket.current.on("connect_error", (socketError: Error) => {
-                    console.error("Socket connection error (exit):", socketError);
+                    console.error(
+                      "Socket connection error (exit):",
+                      socketError
+                    );
                   });
 
-                  socket.current.on("exit_video_frame", (data: VideoFrameData) => {
-                    if (data?.exit_frame && exitVideoRef.current) {
-                      exitVideoRef.current.src = `data:image/jpeg;base64,${data.exit_frame}`;
-                    }
+                  socket.current.on(
+                    "exit_video_frame",
+                    (data: VideoFrameData) => {
+                      if (data?.exit_frame && exitVideoRef.current) {
+                        exitVideoRef.current.src = `data:image/jpeg;base64,${data.exit_frame}`;
+                      }
 
-                    if (data.exit_detections && data.exit_detections.length > 0) {
-                      const mostConfidentDetection = data.exit_detections.reduce(
-                        (prev, current) =>
-                          current.confidence > prev.confidence ? current : prev
-                      );
+                      if (
+                        data.exit_detections &&
+                        data.exit_detections.length > 0
+                      ) {
+                        const mostConfidentDetection =
+                          data.exit_detections.reduce((prev, current) =>
+                            current.confidence > prev.confidence
+                              ? current
+                              : prev
+                          );
 
-                      const PlateNum =
-                        mostConfidentDetection.plates
-                          ?.map((plate) => plate.ocr_text)
-                          .join(", ") || "";
-
-                      setExitDetectionData({
-                        vehicleType: mostConfidentDetection.label,
-                        plateNumber: PlateNum,
-                        colorAnnotation: mostConfidentDetection?.color_annotation,
-                        ocrText:
+                        const PlateNum =
                           mostConfidentDetection.plates
-                            .map((plate) => plate.ocr_text)
-                            .join(", ") || "",
-                        annotationLabel: parseInt(mostConfidentDetection.label),
-                      });
-                    } else {
-                      setExitDetectionData({
-                        vehicleType: "No detection",
-                        plateNumber: "N/A",
-                        colorAnnotation: "N/A",
-                        ocrText: "",
-                        annotationLabel: 0,
-                      });
+                            ?.map((plate) => plate.ocr_text)
+                            .join(", ") || "";
+
+                        setExitDetectionData({
+                          vehicleType: mostConfidentDetection.label,
+                          plateNumber: PlateNum,
+                          colorAnnotation:
+                            mostConfidentDetection?.color_annotation,
+                          ocrText:
+                            mostConfidentDetection.plates
+                              .map((plate) => plate.ocr_text)
+                              .join(", ") || "",
+                          annotationLabel: parseInt(
+                            mostConfidentDetection.label
+                          ),
+                        });
+                      } else {
+                        setExitDetectionData({
+                          vehicleType: "No detection",
+                          plateNumber: "N/A",
+                          colorAnnotation: "N/A",
+                          ocrText: "",
+                          annotationLabel: 0,
+                        });
+                      }
                     }
-                  });
+                  );
                 } else {
-                  socket.current.emit("start_exit_video", { camera_index: selectedCamera });
+                  socket.current.emit("start_exit_video", {
+                    camera_index: selectedCamera,
+                  });
                 }
 
->>>>>>> origin/for-analytics
                 setExitEnabled(true);
               }
             }}
