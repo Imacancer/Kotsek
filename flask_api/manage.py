@@ -24,7 +24,7 @@ from db.db import init_db, db  # Import the init_db function and db instance
 
 load_dotenv()
 
-socketio = SocketIO(cors_allowed_origins="*", ping_timeout=1, ping_interval=2, max_http_buffer_size=1e8)
+socketio = SocketIO(cors_allowed_origins="*", ping_timeout=1, ping_interval=2, max_http_buffer_size=1e8,async_mode='eventlet')
 def create_app():
 
     global entry_video_processor, exit_video_processor
@@ -56,12 +56,12 @@ def create_app():
 
     # Initialize SocketIO and any additional services
     socketio.init_app(app)
-    cctv = "rtmp://host.docker.internal:1935/live/test"
+    cctv = "rtmp://host.docker.internal:1935/live/test"  # Update this to your actual CCTV stream URL
 
     video_path_exit = "./sample/1exitnew.mp4"  # Update path as necessary
     video_path_entry = "./sample/1entrynew.mp4"
-    entry_video_processor = EntryVideoProcessor(socketio, video_path_entry) 
-    exit_video_processor = VideoProcessor(socketio, video_path_exit)
+    entry_video_processor = EntryVideoProcessor(socketio, cctv) 
+    exit_video_processor = VideoProcessor(socketio, cctv)
     app.entry_video_processor = entry_video_processor
     app.exit_video_processor = exit_video_processor
 
@@ -117,6 +117,7 @@ def create_app():
     @app.route("/")
     def index():
         return "Backend is alive!"
+    
     return app
 
 

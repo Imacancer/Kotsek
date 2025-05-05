@@ -29,7 +29,11 @@ RUN pip install --upgrade pip setuptools wheel
 
 # Copy and install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY wheels/ ./wheels/ 
+RUN pip install --find-links=./wheels -r requirements.txt || \
+    pip install -r requirements.txt
+
+
 COPY paddle_models /paddle_models
 
 RUN mkdir -p /root/.paddleocr/whl/det/en/ && \

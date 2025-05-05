@@ -26,7 +26,7 @@ from models.vehicle_exit import VehicleExit
 from models.customer import ParkingCustomer
 from models.guards import Guard
 from models.parking_session import ParkingSession
-
+import queue
 # Load environment variables
 load_dotenv()
 
@@ -43,7 +43,7 @@ class VideoProcessor:
         self.socketio = socketio
         self.video_path = video_path
         self.model = YOLO(model_path)  # Vehicle detection model
-        self.plate_model = YOLO(plate_model_path)  # Plate detection model
+        self.plate_model = YOLO(plate_model_path).to('cuda') # Plate detection model
         self.frame_queue = Queue(maxsize=10)
         self.result_queue = Queue(maxsize=10)
         self.running = False
@@ -623,8 +623,10 @@ class VideoProcessor:
             frame = np.frombuffer(raw_frame, np.uint8).reshape((self.frame_height, self.frame_width, 3))
 
             while not self.frame_queue.empty():
-                self.frame_queue.get_nowait()
-            self.frame_queue.put(frame)
+                try:
+                    self.frame_queue.get_nowait()
+                except queue.Empty:
+                    break
 
             time.sleep(0.03)
     def frame_producer_opencv(self):
@@ -637,12 +639,13 @@ class VideoProcessor:
             frame = cv2.resize(frame, (self.frame_width, self.frame_height))
 
             while not self.frame_queue.empty():
-                self.frame_queue.get_nowait()
+                try:
+                    self.frame_queue.get_nowait()
+                except queue.Empty:
+                    break
             self.frame_queue.put(frame)
 
             time.sleep(1 / 30)  # ~30 FPS
-
-
 
     def frame_processor(self):
         while self.running:
@@ -658,7 +661,7 @@ class VideoProcessor:
             if self._frame_index % 2 != 0:
                 continue  # skip this frame
             annotated_frame, detections = self.process_frame(frame, size=(960, 540))
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 60]
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
             _, buffer = cv2.imencode('.jpg', annotated_frame, encode_param)
             frame_data = base64.b64encode(buffer).decode('utf-8')
             self.result_queue.put({
@@ -705,7 +708,8 @@ class VideoProcessor:
             self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
         if not hasattr(self, 'model') or self.model is None:
             self.model = YOLO(self.model_path)  # or self.model_path if you've saved it
-
+            self.model.to('cuda')
+            print(f"✅ YOLO running on: {self.model.device}")
 
         is_rtsp = self.video_path.startswith("rtsp://")
         self.ffmpeg_process = None
@@ -797,7 +801,7 @@ class EntryVideoProcessor:
         self.socketio = socketio
         self.video_path = video_path
         self.model = YOLO(model_path)  # Vehicle detection model
-        self.plate_model = YOLO(plate_model_path)  # Plate detection model
+        self.plate_model = YOLO(plate_model_path).to('cuda')  # Plate detection model
         self.frame_queue = Queue(maxsize=10)
         self.result_queue = Queue(maxsize=10)
         self.running = False
@@ -1383,11 +1387,16 @@ class EntryVideoProcessor:
             frame = np.frombuffer(raw_frame, np.uint8).reshape((self.frame_height, self.frame_width, 3))
 
             while not self.frame_queue.empty():
-                self.frame_queue.get_nowait()
-            self.frame_queue.put(frame)
+                try:
+                    self.frame_queue.get_nowait()
+                except queue.Empty:
+                    break
 
             time.sleep(0.03)
     def frame_producer_opencv(self):
+        fps = self.video_capture.get(cv2.CAP_PROP_FPS)
+        frame_delay = 1.0 / fps if fps > 0 else 0.033  # fallback to ~30 FPS
+
         while self.running:
             ret, frame = self.video_capture.read()
             if not ret:
@@ -1396,12 +1405,16 @@ class EntryVideoProcessor:
 
             frame = cv2.resize(frame, (self.frame_width, self.frame_height))
 
+            # Drop old frames to avoid queue buildup
             while not self.frame_queue.empty():
-                self.frame_queue.get_nowait()
+                try:
+                    self.frame_queue.get_nowait()
+                except queue.Empty:
+                    break
+
             self.frame_queue.put(frame)
 
-            time.sleep(1 / 30)  # ~30 FPS
-
+            time.sleep(frame_delay)
 
     def frame_producer(self, cap):
         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -1464,6 +1477,7 @@ class EntryVideoProcessor:
 
     def start(self):
         if self.running:
+
             return
 
         self.running = True
@@ -1472,9 +1486,14 @@ class EntryVideoProcessor:
         self.frame_size = self.frame_width * self.frame_height * 3
         if self.ocr is None:
             self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
+        if not hasattr(self, 'model') or self.model is None:
+            self.model = YOLO(self.model_path)  # or self.model_path if you've saved it
+            self.model.to('cuda')
+            print(f"✅ YOLO running on: {self.model.device}")
 
-        is_rtsp = isinstance(self.video_path, str) and self.video_path.startswith("rtsp://")
+        is_rtsp = self.video_path.startswith("rtsp://")
         self.ffmpeg_process = None
+        
 
         if is_rtsp:
             print("📡 Starting RTSP stream using FFmpeg pipe...")
@@ -1515,6 +1534,7 @@ class EntryVideoProcessor:
         self.processor_thread = Thread(target=self.frame_processor)
         self.emit_thread = Thread(target=self.emit_frames)
 
+
         for t in [self.producer_thread, self.processor_thread, self.emit_thread]:
             t.daemon = True
             t.start()
@@ -1547,5 +1567,8 @@ class EntryVideoProcessor:
         self.logged_lost_ids.clear()
         self.plate_buffer.clear()
         self.class_counts.clear()
+        self.model = None
 
         print("🛑 Video processing stopped and buffers cleared.")
+
+
