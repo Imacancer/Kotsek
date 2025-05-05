@@ -1,0 +1,24 @@
+cmake
+flask
+flask-sqlalchemy
+flask-migrate
+flask-cors
+flask-socketio
+opencv-python
+ultralytics==8.3.55
+pytesseract
+numpy
+python-dotenv
+requests
+Werkzeug
+supabase
+flask-jwt-extended
+paddleocr
+paddlepaddle
+psycopg2-binary
+
+# Put this just before torch packages:
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch
+torchvision
+torchaudio
