@@ -408,7 +408,6 @@ const SurveillanceInterface = () => {
       toast.error("Failed to connect to unassigned vehicles feed");
     }
   };
-
   useEffect(() => {
     fetchParkingData();
     fetchUnassignedVehicles();
@@ -1396,14 +1395,19 @@ const SurveillanceInterface = () => {
           </CardHeader>
           <CardContent className="p-6">
             <div className="flex flex-col space-y-6">
+
+            
               {/* Parking Slots Visual Component */}
               <ParkingSlotsComponent
                 parkingDataLeft={parkingDataLeft}
                 parkingDataRight={parkingDataRight}
                 parkingDataCenter={parkingDataCenter}
                 parkingDataTop={parkingDataTop}
-                parkingDataBikeLeft={parkingDataLeft}
-                parkingDataBikeRight={parkingDataRight}
+
+
+                parkingDataBikeLeft={bikeLeftData}
+
+                parkingDataBikeRight={bikeRightData}
                 parkingDataMotor={motorcycleData}
                 totalSpaces={totalSpaces}
                 occupiedSpaces={occupiedSpaces}
@@ -1484,7 +1488,7 @@ const SurveillanceInterface = () => {
           }
           setCurrentSection={setCurrentSpecialtySection}
           bikeData={
-            currentSpecialtySection === "bike-left"
+            currentSpecialtySection === "bike area left"
               ? bikeLeftData
               : bikeRightData
           }

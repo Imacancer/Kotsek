@@ -24,7 +24,7 @@ from db.db import init_db, db  # Import the init_db function and db instance
 
 load_dotenv()
 
-socketio = SocketIO(cors_allowed_origins="*", ping_timeout=3, ping_interval=2, max_http_buffer_size=1e8)
+socketio = SocketIO(cors_allowed_origins="*", ping_timeout=1, ping_interval=2, max_http_buffer_size=1e8)
 def create_app():
 
     global entry_video_processor, exit_video_processor

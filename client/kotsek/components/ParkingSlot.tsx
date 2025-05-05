@@ -154,7 +154,9 @@ const ParkingSlotsComponent = ({
       slots: parkingDataBikeRight,
     },
   ];
-
+  console.log("🧠 Bike Right Data:", parkingDataBikeRight);
+  console.log("🚲 Total:", bikeAreaRight[0].total, "Occupied:", bikeAreaRight[0].occupied);
+  
   // Motor parking lot data with total occupancy
   const motorParkingLot: MotorParkingData = {
     id: parkingDataMotor[0]?.id || "elevated parking",
