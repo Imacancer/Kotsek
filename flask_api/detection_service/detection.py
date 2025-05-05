@@ -42,7 +42,7 @@ class VideoProcessor:
     def __init__(self, socketio, video_path, model_path="yolov8n.pt", plate_model_path="./plates/best.pt"):
         self.socketio = socketio
         self.video_path = video_path
-        self.model = YOLO(model_path)  # Vehicle detection model
+        self.model = YOLO(model_path).to('cuda:0')  # Vehicle detection model
         self.plate_model = YOLO(plate_model_path).to('cuda') # Plate detection model
         self.frame_queue = Queue(maxsize=10)
         self.result_queue = Queue(maxsize=10)
@@ -168,8 +168,8 @@ class VideoProcessor:
                 if not customer:
                     # Create a temporary customer record with minimal information
                     new_customer = ParkingCustomer(
-                        first_name="Haerin",
-                        last_name="Kang",
+                        first_name="Guest",
+                        last_name="Guest",
                         plate_number=plate_text,
                         is_registered=False,  # Mark as unregistered
                         color=hex_color,
@@ -708,7 +708,7 @@ class VideoProcessor:
             self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
         if not hasattr(self, 'model') or self.model is None:
             self.model = YOLO(self.model_path)  # or self.model_path if you've saved it
-            self.model.to('cuda')
+            self.model.to('cuda:0')
             print(f"✅ YOLO running on: {self.model.device}")
 
         is_rtsp = self.video_path.startswith("rtsp://")
@@ -744,6 +744,7 @@ class VideoProcessor:
             self.producer_thread = Thread(target=self.frame_producer_ffmpeg)
         else:
             print("📼 Starting video file using OpenCV...")
+            print(f"✅ YOLO running on: {self.model.device}")
             self.video_capture = cv2.VideoCapture(self.video_path)
             if not self.video_capture.isOpened():
                 print("❌ Failed to open video file.")
@@ -800,8 +801,8 @@ class EntryVideoProcessor:
     def __init__(self, socketio, video_path, model_path="yolov8n.pt", plate_model_path="./plates/best.pt"):
         self.socketio = socketio
         self.video_path = video_path
-        self.model = YOLO(model_path)  # Vehicle detection model
-        self.plate_model = YOLO(plate_model_path).to('cuda')  # Plate detection model
+        self.model = YOLO(model_path).to('cuda:0')  # Vehicle detection model
+        self.plate_model = YOLO(plate_model_path).to('cuda:0')  # Plate detection model
         self.frame_queue = Queue(maxsize=10)
         self.result_queue = Queue(maxsize=10)
         self.running = False
