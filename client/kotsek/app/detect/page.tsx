@@ -1435,9 +1435,11 @@ const SurveillanceInterface = () => {
                     setSelectedVehicleType("bicycle");
                     // Update the bike data based on section
                     if (section === "bike area left") {
+                      fetchParkingData();
                       setBikeLeftData(slots || []);
                       setBikeLeftData([]);
                     } else {
+                      fetchParkingData();
                       setBikeRightData(slots || []);
                       setBikeRightData([]);
                     }
