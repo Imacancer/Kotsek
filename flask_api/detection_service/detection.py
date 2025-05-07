@@ -26,7 +26,7 @@ from models.vehicle_exit import VehicleExit
 from models.customer import ParkingCustomer
 from models.guards import Guard
 from models.parking_session import ParkingSession
-import queue
+
 # Load environment variables
 load_dotenv()
 
@@ -42,8 +42,8 @@ class VideoProcessor:
     def __init__(self, socketio, video_path, model_path="yolov8n.pt", plate_model_path="./plates/best.pt"):
         self.socketio = socketio
         self.video_path = video_path
-        self.model = YOLO(model_path).to('cuda:0')  # Vehicle detection model
-        self.plate_model = YOLO(plate_model_path).to('cuda') # Plate detection model
+        self.model = YOLO(model_path)  # Vehicle detection model
+        self.plate_model = YOLO(plate_model_path)  # Plate detection model
         self.frame_queue = Queue(maxsize=10)
         self.result_queue = Queue(maxsize=10)
         self.running = False
@@ -54,6 +54,7 @@ class VideoProcessor:
         self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
         self.model_path = model_path
         self._frame_index = 0
+        self.is_exit_camera=False
 
         
         # Tracking variables
@@ -139,9 +140,95 @@ class VideoProcessor:
 
         return None
     
+    def assign_bicycle(self, entry_id, customer_id, plate_number, entry_time):
+        from models.parking_slot import ParkingSlot
+        from models.parking_session import ParkingSession
+
+        with Session(self.engine) as session:
+            # Search for available slot in 'bike area left'
+            slot = session.query(ParkingSlot)\
+                .filter_by(section="bike area left", vehicle_type="bicycle", status="available", is_active=True)\
+                .order_by(ParkingSlot.slot_number.asc())\
+                .first()
+
+            # If none, try 'bike area right'
+            if not slot:
+                slot = session.query(ParkingSlot)\
+                    .filter_by(section="bike area right", vehicle_type="bicycle", status="available", is_active=True)\
+                    .order_by(ParkingSlot.slot_number.asc())\
+                    .first()
+
+            if not slot:
+                print("❌ No available bicycle slots in either section.")
+                return
+
+            try:
+                # Assign slot
+                slot.status = "occupied"
+                slot.current_vehicle_id = entry_id
+
+                # Create parking session
+                session_entry = ParkingSession(
+                    entry_id=entry_id,
+                    slot_id=slot.slot_id,
+                    lot_id=slot.lot_id,
+                    customer_id=customer_id,
+                    plate_number=plate_number,
+                    start_time=entry_time,
+                    status="active"
+                )
+
+                session.add(session_entry)
+                session.commit()
+                print(f"✅ Bicycle assigned to slot {slot.slot_number} in {slot.section}.")
+            except Exception as e:
+                session.rollback()
+                print(f"❌ Failed to assign bicycle: {e}")
+    def assign_motorcycle(self, entry_id, customer_id, plate_number, entry_time):
+        from models.parking_slot import ParkingSlot
+        from models.parking_session import ParkingSession
+
+        with Session(self.engine) as session:
+            # Find available motorcycle slot in elevated parking
+            slot = session.query(ParkingSlot)\
+                .filter_by(section="elevated parking", vehicle_type="motorcycle", status="available", is_active=True)\
+                .order_by(ParkingSlot.slot_number.asc())\
+                .first()
+
+            if not slot:
+                print("❌ No available motorcycle slots in elevated parking.")
+                return
+
+            try:
+                # Assign slot
+                slot.status = "occupied"
+                slot.current_vehicle_id = entry_id
+
+                # Create parking session
+                session_entry = ParkingSession(
+                    entry_id=entry_id,
+                    slot_id=slot.slot_id,
+                    lot_id=slot.lot_id,
+                    customer_id=customer_id,
+                    plate_number=plate_number,
+                    start_time=entry_time,
+                    status="active"
+                )
+
+                session.add(session_entry)
+                session.commit()
+                print(f"✅ Motorcycle assigned to slot {slot.slot_number} in elevated parking.")
+            except Exception as e:
+                session.rollback()
+                print(f"❌ Failed to assign motorcycle: {e}")
+
     def upload_vehicle_entry(self, plate_text, plate_confidence, entry_time, screenshot_frame, timestamp_str, vehicle_type, hex_color):
         try:
             # Save screenshot to temp PNG file
+
+            if not isinstance(screenshot_frame, np.ndarray):
+                print(f"❌ screenshot_frame is invalid (type: {type(screenshot_frame)}), skipping entry upload.")
+                return
             _, buffer = cv2.imencode(".png", screenshot_frame)
             image_bytes = buffer.tobytes()
             filename = f"{uuid.uuid4()}.png"
@@ -188,6 +275,7 @@ class VideoProcessor:
                     customer_id = customer.customer_id
                     
                 # Create new vehicle entry
+                status =  "assigned" if vehicle_type.lower() in ["bicycle", "motorcycle"] else "unassigned"
                 entry = VehicleEntry(
                     entry_id=str(uuid.uuid4()),
                     plate_number=plate_text,
@@ -197,15 +285,19 @@ class VideoProcessor:
                     vehicle_type=vehicle_type,  # Default or based on detection
                     hex_color=hex_color,  # Default or detected color
                     guard_id=self.active_guard_id,
-                    status='unassigned'
+                    status=status
                 )
                 
                 try:
                     session.add(entry)
                     session.commit()
                     print("✅ Entry inserted into database")
+                    if vehicle_type.lower() == "bicycle":
+                        self.assign_bicycle(entry.entry_id, customer_id, plate_text, entry.entry_time)
+                    elif vehicle_type.lower() == "motorcycle":
+                        self.assign_motorcycle(entry.entry_id, customer_id, plate_text, entry.entry_time)
                     
-                    entry_status = "assigned" if self.active_guard_id else "unassigned"
+                    entry_status = "assigned" if vehicle_type.lower() in ["bicycle", "motorcycle"] else "unassigned"
                     self.socketio.emit("new_vehicle_entry", {
                         "entry_id": str(entry.entry_id),
                         "plate_number": plate_text,
@@ -227,6 +319,43 @@ class VideoProcessor:
 
         except Exception as e:
             print(f"❌ Exception in upload_vehicle_entry: {e}")
+    
+    def auto_release_slot(self, plate_number, exit_time_str):
+        from models.parking_session import ParkingSession
+        from models.parking_slot import ParkingSlot
+        from models.vehicle_exit import VehicleExit
+
+        try:
+            with Session(self.engine) as session:
+                # Get the latest active session for this plate
+                session_record = session.query(ParkingSession)\
+                    .filter_by(plate_number=plate_number, status='active', exit_id=None)\
+                    .order_by(ParkingSession.start_time.desc())\
+                    .first()
+
+                if not session_record:
+                    print(f"⚠️ No active session found for auto-exit of {plate_number}")
+                    return
+
+                # Mark slot as available
+                slot = session_record.slot
+                if slot:
+                    slot.status = 'available'
+                    slot.current_vehicle_id = None
+
+                # Calculate session end and duration
+                exit_time = datetime.strptime(exit_time_str, "%Y-%m-%d %H:%M:%S")
+                session_record.end_time = exit_time
+                session_record.status = 'completed'
+                if session_record.start_time:
+                    duration = exit_time - session_record.start_time
+                    session_record.duration_minutes = int(duration.total_seconds() // 60)
+
+                session.commit()
+                print(f"✅ Auto-unassigned slot {slot.slot_number} for {plate_number} (Duration: {session_record.duration_minutes} mins)")
+
+        except Exception as e:
+            print(f"❌ Failed to auto-release slot: {e}")
 
     def upload_vehicle_exit(self, plate_text, plate_confidence, exit_time, screenshot_frame, timestamp_str, vehicle_type, hex_color):
         try:
@@ -297,16 +426,19 @@ class VideoProcessor:
                         if session_record:
                             session_record.exit_id = exit_record.exit_id
                             session_record.end_time = exit_record.exit_time
-
                             session_record.status = 'completed'
+                            
+
+                            # ✅ Calculate duration in minutes
                             if session_record.end_time and session_record.start_time:
                                 duration = session_record.end_time - session_record.start_time
                                 session_record.duration_minutes = int(duration.total_seconds() // 60)
 
-                            # Mark the slot as available
-                            if session_record.slot:
-                                session_record.slot.status = 'available'
-
+                            # ✅ Mark the assigned slot as available & unlink current_vehicle_id
+                            slot = session_record.slot
+                            if slot:
+                                slot.status = 'available'
+                                slot.current_vehicle_id = None
                             session.commit()
                             print(f"✅ Parking session completed for plate {plate_text}")
                         else:
@@ -346,12 +478,13 @@ class VideoProcessor:
 
 
     def process_frame(self, frame, size=None):
-        print(f"✅ YOLO running on: {self.model.device}")
+        self.is_exit_camera = True
         filtered_boxes = []
         filtered_track_ids = []
         filtered_confidences = []
         filtered_class_indices = []
         print(self.active_guard_id)
+        
         if size:
             frame = cv2.resize(frame, size)
         original_frame = frame.copy()  # Clean version for screenshot
@@ -401,13 +534,17 @@ class VideoProcessor:
                 cx = (x1 + x2) // 2
                 cy = (y1 + y2) // 2
 
-                direction = None
+                direction = self.detection_history.get(track_id, {}).get("direction", None)
                 if track_id in self.previous_centers:
                     prev_cx = self.previous_centers[track_id]
                     if cx < prev_cx:
                         direction = "left"
                     elif cx > prev_cx:
                         direction = "right"
+                if direction in ["left", "right"]:
+                    if track_id in self.detection_history:
+                        self.detection_history[track_id]["direction"] = direction
+
                 self.previous_centers[track_id] = cx
                 # Draw object center and ID
                 cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
@@ -415,7 +552,7 @@ class VideoProcessor:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
 
                 # Plate detection
-                if x1 < plate_line_x:
+                if label == "motorcycle" or x1 < plate_line_x:
                     roi = frame[y1:y2, x1:x2]
                     plate_results = self.plate_model(roi, conf=0.5)
 
@@ -451,7 +588,14 @@ class VideoProcessor:
                             old_plate = self.plate_buffer.get(track_id)
                             if (old_plate is None or plate_conf > old_plate["confidence"]) and self.is_valid_plate_format(plate_text):
                                 self.plate_buffer[track_id] = new_plate
-                                best_plate_frame = frame.copy()
+
+                                if isinstance(frame, np.ndarray) and frame.size > 0:
+                                    best_plate_frame = frame.copy()
+                                    print(f"[DEBUG] Best plate updated for ID {track_id}: {plate_text} (Conf: {plate_conf:.2f}) and screenshot")
+                                    print(f"[DEBUG] Saved screenshot shape for ID {track_id}: {best_plate_frame.shape}")
+                                else:
+                                    print("❌ best_plate_frame = frame.copy() failed: frame is empty or invalid")
+                                    best_plate_frame = None
                             self.log_detection("Plate", plate_conf, plate_text, track_id)
 
                 # Color detection
@@ -461,8 +605,15 @@ class VideoProcessor:
                 mean_hsv_uint8 = np.array([[mean_hsv]], dtype=np.uint8)
                 mean_bgr = cv2.cvtColor(mean_hsv_uint8, cv2.COLOR_HSV2BGR)[0][0]
                 hex_color = '#{:02x}{:02x}{:02x}'.format(int(mean_bgr[2]), int(mean_bgr[1]), int(mean_bgr[0]))
-
-                # Check if crossed
+                #screenshot safe
+                if isinstance(best_plate_frame, np.ndarray) and best_plate_frame.size > 0:
+                    safe_screenshot = best_plate_frame.copy()
+                elif isinstance(original_frame, np.ndarray) and original_frame.size > 0:
+                    safe_screenshot = original_frame.copy()
+                else:
+                    print("❌ No valid frame available, using dummy fallback image")
+                    safe_screenshot = np.zeros((10, 10, 3), dtype=np.uint8)  # fallback
+                                # Check if crossed
                 if x1 < plate_line_x and track_id not in self.crossed_ids:
                     self.crossed_ids.add(track_id)
                     self.class_counts[label] += 1
@@ -485,7 +636,8 @@ class VideoProcessor:
                         "plate_confidence": best_plate["confidence"] if best_plate else 0,
                         "timestamp": timestamp,
                         "color": hex_color,
-                        "screenshot": best_plate_frame.copy() if best_plate_frame is not None else original_frame.copy()  # Save clean screenshot here
+                        "screenshot": safe_screenshot,
+                        "direction":direction if direction else "undetermined"
                     }
 
                 detections.append({
@@ -496,8 +648,10 @@ class VideoProcessor:
                     "plates": [self.plate_buffer[track_id]] if track_id in self.plate_buffer else None,
                     "best_plate": self.plate_buffer[track_id] if track_id in self.plate_buffer else None
                 })
+                print(f"direction: {direction}")
 
         # Process lost vehicle info
+        
         lost_ids = self.crossed_ids - current_ids
         for lost_id in lost_ids:
             if lost_id not in self.logged_lost_ids:
@@ -511,87 +665,106 @@ class VideoProcessor:
                         print(f"  ↳ Color: {info['color']}")
                         print(f"  ↳ Timestamp: {info['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
 
+                        label = info["label"].lower()
+                        direction = info.get("direction", None)
+                        timestamp_str = info['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+
+
+
+                        # 🚗 CAR
                         best_plate = self.plate_buffer.get(lost_id)
-                        if best_plate and self.is_valid_plate_format(best_plate["ocr_text"]):
-                            timestamp_str = info['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+                        if best_plate and self.is_valid_plate_format(best_plate["ocr_text"]) and label == "car":
                             try:
                                 self.upload_vehicle_exit(
                                     plate_text=best_plate["ocr_text"],
                                     plate_confidence=best_plate["confidence"],
-                                    exit_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
+                                    exit_time=timestamp_str,
                                     timestamp_str=timestamp_str,
                                     screenshot_frame=info['screenshot'],
                                     vehicle_type=info['label'],
                                     hex_color=info['color'],
                                 )
-                                # ✅ Clean up after successful upload
+                                # Clean up
                                 self.detection_history.pop(lost_id, None)
                                 self.plate_buffer.pop(lost_id, None)
                                 self.crossed_ids.discard(lost_id)
                                 self.logged_lost_ids.add(lost_id)
-
                             except Exception as e:
-                                print(f"❌ Exception in upload_vehicle_entry: {e}")
-                    
-                        label = info["label"].lower()
-                        direction = info.get("direction", None)
-                        if label == "bicycle":
-                            if isinstance(self, EntryVideoProcessor):
-                                self.upload_vehicle_entry("NO PLATE", 0.0, info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), info["screenshot"], info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), vehicle_type="bicycle", hex_color=info["color"])
-                            else:
-                                self.upload_vehicle_exit("NO PLATE", 0.0, info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), info["screenshot"], info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), vehicle_type="bicycle", hex_color=info["color"])
+                                print(f"❌ Exception in upload_vehicle_exit: {e}")
 
-                        best_plate = self.plate_buffer.get(lost_id)
-                        if best_plate and self.is_valid_plate_format(best_plate["ocr_text"]):
+                        # 🚲 BICYCLE (No plate)
+                        if label == "bicycle":
+                            if self.is_exit_camera:
+                                self.upload_vehicle_exit(
+                                    plate_text="NO PLATE",
+                                    plate_confidence=0.0,
+                                    exit_time=timestamp_str,
+                                    screenshot_frame=info["screenshot"],
+                                    timestamp_str=timestamp_str,
+                                    vehicle_type="bicycle",
+                                    hex_color=info["color"]
+                                )
+                            else:
+                                self.upload_vehicle_entry(
+                                    plate_text="NO PLATE",
+                                    plate_confidence=0.0,
+                                    entry_time=timestamp_str,
+                                    screenshot_frame=info["screenshot"],
+                                    timestamp_str=timestamp_str,
+                                    vehicle_type="bicycle",
+                                    hex_color=info["color"]
+                                )
+                        # 🏍 MOTORCYCLE
+                        if best_plate and self.is_valid_plate_format(best_plate["ocr_text"]) and label == "motorcycle":
+                            print(f"[DEBUG] Calling upload_vehicle_entry with screenshot type: {type(info['screenshot'])}")
+                            print(f"[DEBUG] Motorcycle logic triggered — direction: {direction}, is_exit_camera: {getattr(self, 'is_exit_camera', 'undefined')}")
                             plate_text = best_plate["ocr_text"]
                             plate_confidence = best_plate["confidence"]
-                            timestamp_str = info['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
-                            if label == "motorcycle":
-                                if isinstance(self, EntryVideoProcessor) and direction == "left":
-
-                                    self.upload_vehicle_exit(
-                                            plate_text=best_plate["ocr_text"],
-                                            plate_confidence=best_plate["confidence"],
-                                            exit_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
-                                            timestamp_str=timestamp_str,
-                                            screenshot_frame=info['screenshot'],
-                                            vehicle_type=info['label'],
-                                            hex_color=info['color'],
-                                        )
-                                elif isinstance(self, VideoProcessor) and direction == "right":
+                            if self.is_exit_camera:
+                                if direction == "right":  # ✅ Entry from Exit side
                                     self.upload_vehicle_entry(
-                                        plate_text=best_plate["ocr_text"],
-                                        plate_confidence=best_plate["confidence"],
-                                        entry_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
-                                        timestamp_str=timestamp_str,
+                                        plate_text=plate_text,
+                                        plate_confidence=plate_confidence,
+                                        entry_time=timestamp_str,
                                         screenshot_frame=info['screenshot'],
-                                        vehicle_type=info['label'],
+                                        timestamp_str=timestamp_str,
+                                        vehicle_type=label,
                                         hex_color=info['color']
                                     )
-                                else:
-                                    if isinstance(self, EntryVideoProcessor):
-                                        self.upload_vehicle_entry(
-                                        plate_text=best_plate["ocr_text"],
-                                        plate_confidence=best_plate["confidence"],
-                                        entry_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
+                                elif direction == "left":  # ✅ Exit from Exit side
+                                    self.upload_vehicle_exit(
+                                        plate_text=plate_text,
+                                        plate_confidence=0.0,
+                                        exit_time=timestamp_str,
+                                        screenshot_frame=info["screenshot"],
                                         timestamp_str=timestamp_str,
+                                        vehicle_type="motorcycle",
+                                        hex_color=info["color"]
+                                    )
+                            else:
+                                if direction == "right":  # ✅ Entry from Entry side
+                                    self.upload_vehicle_entry(
+                                        plate_text=plate_text,
+                                        plate_confidence=plate_confidence,
+                                        entry_time=timestamp_str,
                                         screenshot_frame=info['screenshot'],
-                                        vehicle_type=info['label'],
+                                        timestamp_str=timestamp_str,
+                                        vehicle_type=label,
                                         hex_color=info['color']
                                     )
-                                    else:
-                                        self.upload_vehicle_exit(
-                                            plate_text=best_plate["ocr_text"],
-                                            plate_confidence=best_plate["confidence"],
-                                            exit_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
-                                            timestamp_str=timestamp_str,
-                                            screenshot_frame=info['screenshot'],
-                                            vehicle_type=info['label'],
-                                            hex_color=info['color'],
-                                        )
-                        
-        
-                self.logged_lost_ids.add(lost_id)
+                                elif direction == "left":  # ✅ Exit from Entry side
+                                    self.upload_vehicle_entry(
+                                        plate_text=plate_text,
+                                        plate_confidence=plate_confidence,
+                                        entry_time=timestamp_str,
+                                        screenshot_frame=info['screenshot'],
+                                        timestamp_str=timestamp_str,
+                                        vehicle_type=label,
+                                        hex_color=info['color']
+                                    )
+
+                        # ✅ Mark as processed only after everything above
+                        self.logged_lost_ids.add(lost_id)
 
         # Annotate frame
         annotated_frame = frame.copy()
@@ -623,10 +796,8 @@ class VideoProcessor:
             frame = np.frombuffer(raw_frame, np.uint8).reshape((self.frame_height, self.frame_width, 3))
 
             while not self.frame_queue.empty():
-                try:
-                    self.frame_queue.get_nowait()
-                except queue.Empty:
-                    break
+                self.frame_queue.get_nowait()
+            self.frame_queue.put(frame)
 
             time.sleep(0.03)
     def frame_producer_opencv(self):
@@ -639,13 +810,12 @@ class VideoProcessor:
             frame = cv2.resize(frame, (self.frame_width, self.frame_height))
 
             while not self.frame_queue.empty():
-                try:
-                    self.frame_queue.get_nowait()
-                except queue.Empty:
-                    break
+                self.frame_queue.get_nowait()
             self.frame_queue.put(frame)
 
             time.sleep(1 / 30)  # ~30 FPS
+
+
 
     def frame_processor(self):
         while self.running:
@@ -661,7 +831,7 @@ class VideoProcessor:
             if self._frame_index % 2 != 0:
                 continue  # skip this frame
             annotated_frame, detections = self.process_frame(frame, size=(960, 540))
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 60]
             _, buffer = cv2.imencode('.jpg', annotated_frame, encode_param)
             frame_data = base64.b64encode(buffer).decode('utf-8')
             self.result_queue.put({
@@ -697,7 +867,6 @@ class VideoProcessor:
 
     def start(self):
         if self.running:
-
             return
 
         self.running = True
@@ -708,8 +877,7 @@ class VideoProcessor:
             self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
         if not hasattr(self, 'model') or self.model is None:
             self.model = YOLO(self.model_path)  # or self.model_path if you've saved it
-            self.model.to('cuda:0')
-            print(f"✅ YOLO running on: {self.model.device}")
+
 
         is_rtsp = self.video_path.startswith("rtsp://")
         self.ffmpeg_process = None
@@ -744,7 +912,6 @@ class VideoProcessor:
             self.producer_thread = Thread(target=self.frame_producer_ffmpeg)
         else:
             print("📼 Starting video file using OpenCV...")
-            print(f"✅ YOLO running on: {self.model.device}")
             self.video_capture = cv2.VideoCapture(self.video_path)
             if not self.video_capture.isOpened():
                 print("❌ Failed to open video file.")
@@ -754,7 +921,6 @@ class VideoProcessor:
 
         self.processor_thread = Thread(target=self.frame_processor)
         self.emit_thread = Thread(target=self.emit_frames)
-
 
         for t in [self.producer_thread, self.processor_thread, self.emit_thread]:
             t.daemon = True
@@ -801,8 +967,8 @@ class EntryVideoProcessor:
     def __init__(self, socketio, video_path, model_path="yolov8n.pt", plate_model_path="./plates/best.pt"):
         self.socketio = socketio
         self.video_path = video_path
-        self.model = YOLO(model_path).to('cuda:0')  # Vehicle detection model
-        self.plate_model = YOLO(plate_model_path).to('cuda:0')  # Plate detection model
+        self.model = YOLO(model_path)  # Vehicle detection model
+        self.plate_model = YOLO(plate_model_path)  # Plate detection model
         self.frame_queue = Queue(maxsize=10)
         self.result_queue = Queue(maxsize=10)
         self.running = False
@@ -813,6 +979,7 @@ class EntryVideoProcessor:
         self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
         self.model_path = model_path
         self._frame_index = 0
+        self.is_exit_camera=False
 
         
         # Tracking variables
@@ -905,6 +1072,88 @@ class EntryVideoProcessor:
 
         return None
     
+    def assign_bicycle(self, entry_id, customer_id, plate_number, entry_time):
+        from models.parking_slot import ParkingSlot
+        from models.parking_session import ParkingSession
+
+        with Session(self.engine) as session:
+            # Search for available slot in 'bike area left'
+            slot = session.query(ParkingSlot)\
+                .filter_by(section="bike area left", vehicle_type="bicycle", status="available", is_active=True)\
+                .order_by(ParkingSlot.slot_number.asc())\
+                .first()
+
+            # If none, try 'bike area right'
+            if not slot:
+                slot = session.query(ParkingSlot)\
+                    .filter_by(section="bike area right", vehicle_type="bicycle", status="available", is_active=True)\
+                    .order_by(ParkingSlot.slot_number.asc())\
+                    .first()
+
+            if not slot:
+                print("❌ No available bicycle slots in either section.")
+                return
+
+            try:
+                # Assign slot
+                slot.status = "occupied"
+                slot.current_vehicle_id = entry_id
+
+                # Create parking session
+                session_entry = ParkingSession(
+                    entry_id=entry_id,
+                    slot_id=slot.slot_id,
+                    lot_id=slot.lot_id,
+                    customer_id=customer_id,
+                    plate_number=plate_number,
+                    start_time=entry_time,
+                    status="active"
+                )
+
+                session.add(session_entry)
+                session.commit()
+                print(f"✅ Bicycle assigned to slot {slot.slot_number} in {slot.section}.")
+            except Exception as e:
+                session.rollback()
+                print(f"❌ Failed to assign bicycle: {e}")
+    def assign_motorcycle(self, entry_id, customer_id, plate_number, entry_time):
+        from models.parking_slot import ParkingSlot
+        from models.parking_session import ParkingSession
+
+        with Session(self.engine) as session:
+            # Find available motorcycle slot in elevated parking
+            slot = session.query(ParkingSlot)\
+                .filter_by(section="elevated parking", vehicle_type="motorcycle", status="available", is_active=True)\
+                .order_by(ParkingSlot.slot_number.asc())\
+                .first()
+
+            if not slot:
+                print("❌ No available motorcycle slots in elevated parking.")
+                return
+
+            try:
+                # Assign slot
+                slot.status = "occupied"
+                slot.current_vehicle_id = entry_id
+
+                # Create parking session
+                session_entry = ParkingSession(
+                    entry_id=entry_id,
+                    slot_id=slot.slot_id,
+                    lot_id=slot.lot_id,
+                    customer_id=customer_id,
+                    plate_number=plate_number,
+                    start_time=entry_time,
+                    status="active"
+                )
+
+                session.add(session_entry)
+                session.commit()
+                print(f"✅ Motorcycle assigned to slot {slot.slot_number} in elevated parking.")
+            except Exception as e:
+                session.rollback()
+                print(f"❌ Failed to assign motorcycle: {e}")
+
     def upload_vehicle_entry(self, plate_text, plate_confidence, entry_time, screenshot_frame, timestamp_str, vehicle_type, hex_color):
         try:
             # Save screenshot to temp PNG file
@@ -954,6 +1203,7 @@ class EntryVideoProcessor:
                     customer_id = customer.customer_id
                     
                 # Create new vehicle entry
+                status =  "assigned" if vehicle_type.lower() in ["bicycle", "motorcycle"] else "unassigned"
                 entry = VehicleEntry(
                     entry_id=str(uuid.uuid4()),
                     plate_number=plate_text,
@@ -963,15 +1213,19 @@ class EntryVideoProcessor:
                     vehicle_type=vehicle_type,  # Default or based on detection
                     hex_color=hex_color,  # Default or detected color
                     guard_id=self.active_guard_id,
-                    status='unassigned'
+                    status=status
                 )
                 
                 try:
                     session.add(entry)
                     session.commit()
                     print("✅ Entry inserted into database")
+                    if vehicle_type.lower() == "bicycle":
+                        self.assign_bicycle(entry.entry_id, customer_id, plate_text, entry.entry_time)
+                    elif vehicle_type.lower() == "motorcycle":
+                        self.assign_motorcycle(entry.entry_id, customer_id, plate_text, entry.entry_time)
                     
-                    entry_status = "assigned" if self.active_guard_id else "unassigned"
+                    entry_status = "assigned" if vehicle_type.lower() in ["bicycle", "motorcycle"] else "unassigned"
                     self.socketio.emit("new_vehicle_entry", {
                         "entry_id": str(entry.entry_id),
                         "plate_number": plate_text,
@@ -993,6 +1247,42 @@ class EntryVideoProcessor:
 
         except Exception as e:
             print(f"❌ Exception in upload_vehicle_entry: {e}")
+    def auto_release_slot(self, plate_number, exit_time_str):
+        from models.parking_session import ParkingSession
+        from models.parking_slot import ParkingSlot
+        from models.vehicle_exit import VehicleExit
+
+        try:
+            with Session(self.engine) as session:
+                # Get the latest active session for this plate
+                session_record = session.query(ParkingSession)\
+                    .filter_by(plate_number=plate_number, status='active', exit_id=None)\
+                    .order_by(ParkingSession.start_time.desc())\
+                    .first()
+
+                if not session_record:
+                    print(f"⚠️ No active session found for auto-exit of {plate_number}")
+                    return
+
+                # Mark slot as available
+                slot = session_record.slot
+                if slot:
+                    slot.status = 'available'
+                    slot.current_vehicle_id = None
+
+                # Calculate session end and duration
+                exit_time = datetime.strptime(exit_time_str, "%Y-%m-%d %H:%M:%S")
+                session_record.end_time = exit_time
+                session_record.status = 'completed'
+                if session_record.start_time:
+                    duration = exit_time - session_record.start_time
+                    session_record.duration_minutes = int(duration.total_seconds() // 60)
+
+                session.commit()
+                print(f"✅ Auto-unassigned slot {slot.slot_number} for {plate_number} (Duration: {session_record.duration_minutes} mins)")
+
+        except Exception as e:
+            print(f"❌ Failed to auto-release slot: {e}")
 
     def upload_vehicle_exit(self, plate_text, plate_confidence, exit_time, screenshot_frame, timestamp_str, vehicle_type, hex_color):
         try:
@@ -1063,16 +1353,18 @@ class EntryVideoProcessor:
                         if session_record:
                             session_record.exit_id = exit_record.exit_id
                             session_record.end_time = exit_record.exit_time
-                            
                             session_record.status = 'completed'
+
+                            # ✅ Calculate duration in minutes
                             if session_record.end_time and session_record.start_time:
                                 duration = session_record.end_time - session_record.start_time
                                 session_record.duration_minutes = int(duration.total_seconds() // 60)
 
-                            # Mark the slot as available
-                            if session_record.slot:
-                                session_record.slot.status = 'available'
-
+                            # ✅ Mark the assigned slot as available & unlink current_vehicle_id
+                            slot = session_record.slot
+                            if slot:
+                                slot.status = 'available'
+                                slot.current_vehicle_id = None
                             session.commit()
                             print(f"✅ Parking session completed for plate {plate_text}")
                         else:
@@ -1110,6 +1402,7 @@ class EntryVideoProcessor:
             print(f"❌ Exception in upload_vehicle_exit: {e}")
 
     def process_frame(self, frame, size=None):
+        self.is_exit_camera = False
         filtered_boxes = []
         filtered_track_ids = []
         filtered_confidences = []
@@ -1164,13 +1457,16 @@ class EntryVideoProcessor:
                 cx = (x1 + x2) // 2
                 cy = (y1 + y2) // 2
                 # Determine direction
-                direction = None
+                direction = self.detection_history.get(track_id, {}).get("direction", None)
                 if track_id in self.previous_centers:
                     prev_cx = self.previous_centers[track_id]
                     if cx < prev_cx:
                         direction = "left"
                     elif cx > prev_cx:
                         direction = "right"
+                if direction in ["left", "right"]:
+                    if track_id in self.detection_history:
+                        self.detection_history[track_id]["direction"] = direction 
                 self.previous_centers[track_id] = cx
                 # Draw object center and ID
                 cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
@@ -1178,7 +1474,7 @@ class EntryVideoProcessor:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
 
                 # Plate detection
-                if x2 > plate_line_x:
+                if label =="motorcycle" or x2 > plate_line_x:
                     roi = frame[y1:y2, x1:x2]
                     plate_results = self.plate_model(roi, conf=0.5)
 
@@ -1215,8 +1511,14 @@ class EntryVideoProcessor:
                             old_plate = self.plate_buffer.get(track_id)
                             if (old_plate is None or plate_conf > old_plate["confidence"]) and self.is_valid_plate_format(plate_text):
                                 self.plate_buffer[track_id] = new_plate
-                                best_plate_frame = frame.copy() 
 
+                                if isinstance(frame, np.ndarray) and frame.size > 0:
+                                    best_plate_frame = frame.copy()
+                                    print(f"[DEBUG] Best plate updated for ID {track_id}: {plate_text} (Conf: {plate_conf:.2f}) and screenshot")
+                                    print(f"[DEBUG] Saved screenshot shape for ID {track_id}: {best_plate_frame.shape}")
+                                else:
+                                    print("❌ best_plate_frame = frame.copy() failed: frame is empty or invalid")
+                                    best_plate_frame = None
                             self.log_detection("Plate", plate_conf, plate_text, track_id)
 
                 # Color detection
@@ -1226,7 +1528,15 @@ class EntryVideoProcessor:
                 mean_hsv_uint8 = np.array([[mean_hsv]], dtype=np.uint8)
                 mean_bgr = cv2.cvtColor(mean_hsv_uint8, cv2.COLOR_HSV2BGR)[0][0]
                 hex_color = '#{:02x}{:02x}{:02x}'.format(int(mean_bgr[2]), int(mean_bgr[1]), int(mean_bgr[0]))
-
+                #screenshot safe
+                if isinstance(best_plate_frame, np.ndarray) and best_plate_frame.size > 0:
+                    safe_screenshot = best_plate_frame.copy()
+                elif isinstance(original_frame, np.ndarray) and original_frame.size > 0:
+                    safe_screenshot = original_frame.copy()
+                else:
+                    print("❌ No valid frame available, using dummy fallback image")
+                    safe_screenshot = np.zeros((10, 10, 3), dtype=np.uint8)  # fallback
+                                # Check if crossed
                 # Check if crossed
                 if x2 > plate_line_x and track_id not in self.crossed_ids:
                     self.crossed_ids.add(track_id)
@@ -1250,7 +1560,8 @@ class EntryVideoProcessor:
                         "plate_confidence": best_plate["confidence"] if best_plate else 0,
                         "timestamp": timestamp,
                         "color": hex_color,
-                        "screenshot": best_plate_frame.copy() if best_plate_frame is not None else original_frame.copy()  # Save clean screenshot here
+                        "screenshot": safe_screenshot
+                        ,"direction":direction if direction else "undetermined"
                     }
 
                 detections.append({
@@ -1276,10 +1587,12 @@ class EntryVideoProcessor:
                         print(f"  ↳ Type: {info['label']}")
                         print(f"  ↳ Color: {info['color']}")
                         print(f"  ↳ Timestamp: {info['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
-
+                        label = info["label"].lower()
                         best_plate = self.plate_buffer.get(lost_id)
-                        if best_plate and self.is_valid_plate_format(best_plate["ocr_text"]):
-                            timestamp_str = info['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+                        timestamp_str = info['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+                        #car
+                        if best_plate and self.is_valid_plate_format(best_plate["ocr_text"]) and label == "car":
+
                             try:
                                 self.upload_vehicle_entry(
                                     plate_text=best_plate["ocr_text"],
@@ -1297,65 +1610,80 @@ class EntryVideoProcessor:
                                 self.logged_lost_ids.add(lost_id)
                             except Exception as e:
                                 print(f"❌ Exception in upload_vehicle_entry: {e}")
-                        label = info["label"].lower()
+
                         direction = info.get("direction", None)
                         if label == "bicycle":
-                            if isinstance(self, EntryVideoProcessor):
-                                self.upload_vehicle_entry("NO PLATE", 0.0, info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), info["screenshot"], info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), vehicle_type="bicycle", hex_color=info["color"])
-                            else:
-                                self.upload_vehicle_exit("NO PLATE", 0.0, info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), info["screenshot"], info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), vehicle_type="bicycle", hex_color=info["color"])
+                            
+                            if self.is_exit_camera:
+                                self.upload_vehicle_exit(
+                                    plate_text="NO PLATE",
+                                    plate_confidence=0.0,
+                                    exit_time=timestamp_str,
+                                    screenshot_frame=info["screenshot"],
+                                    timestamp_str=timestamp_str,
+                                    vehicle_type="bicycle",
+                                    hex_color=info["color"]
+                                )
 
-                        best_plate = self.plate_buffer.get(lost_id)
-                        if best_plate and self.is_valid_plate_format(best_plate["ocr_text"]):
+                            else:
+                                self.upload_vehicle_entry(
+                                    plate_text="NO PLATE",
+                                    plate_confidence=0.0,
+                                    entry_time=timestamp_str,
+                                    screenshot_frame=info["screenshot"],
+                                    timestamp_str=timestamp_str,
+                                    vehicle_type="bicycle",
+                                    hex_color=info["color"]
+                                )
+                        # 🏍 MOTORCYCLE
+                        if best_plate and self.is_valid_plate_format(best_plate["ocr_text"]) and label == "motorcycle":
+                            print(f"[DEBUG] Calling upload_vehicle_entry with screenshot type: {type(info['screenshot'])}")
+                            print(f"[DEBUG] Motorcycle logic triggered — direction: {direction}, is_exit_camera: {getattr(self, 'is_exit_camera', 'undefined')}")
                             plate_text = best_plate["ocr_text"]
                             plate_confidence = best_plate["confidence"]
-                            timestamp_str = info['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
-
-
-                            if label == "motorcycle":
-                                if isinstance(self, EntryVideoProcessor) and direction == "left":
+                            if self.is_exit_camera:
+                                if direction == "right":  # ✅ Entry from Exit side
+                                    self.upload_vehicle_entry(
+                                        plate_text=plate_text,
+                                        plate_confidence=plate_confidence,
+                                        entry_time=timestamp_str,
+                                        screenshot_frame=info['screenshot'],
+                                        timestamp_str=timestamp_str,
+                                        vehicle_type=label,
+                                        hex_color=info['color']
+                                    )
+                                elif direction == "left":  # ✅ Exit from Exit side
+                                    self.upload_vehicle_entry(
+                                        plate_text=plate_text,
+                                        plate_confidence=plate_confidence,
+                                        entry_time=timestamp_str,
+                                        screenshot_frame=info['screenshot'],
+                                        timestamp_str=timestamp_str,
+                                        vehicle_type=label,
+                                        hex_color=info['color']
+                                    )
+                            else:
+                                if direction == "right":  # ✅ Entry from Entry side
+                                    self.upload_vehicle_entry(
+                                        plate_text=plate_text,
+                                        plate_confidence=plate_confidence,
+                                        entry_time=timestamp_str,
+                                        screenshot_frame=info['screenshot'],
+                                        timestamp_str=timestamp_str,
+                                        vehicle_type=label,
+                                        hex_color=info['color']
+                                    )
+                                elif direction == "left":  # ✅ Exit from Entry side
 
                                     self.upload_vehicle_exit(
-                                            plate_text=best_plate["ocr_text"],
-                                            plate_confidence=best_plate["confidence"],
-                                            exit_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
-                                            timestamp_str=timestamp_str,
-                                            screenshot_frame=info['screenshot'],
-                                            vehicle_type=info['label'],
-                                            hex_color=info['color'],
-                                        )
-                                elif isinstance(self, VideoProcessor) and direction == "right":
-                                    self.upload_vehicle_entry(
-                                        plate_text=best_plate["ocr_text"],
-                                        plate_confidence=best_plate["confidence"],
-                                        entry_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
+                                        plate_text=plate_text,
+                                        plate_confidence=0.0,
+                                        exit_time=timestamp_str,
+                                        screenshot_frame=info["screenshot"],
                                         timestamp_str=timestamp_str,
-                                        screenshot_frame=info['screenshot'],
-                                        vehicle_type=info['label'],
-                                        hex_color=info['color']
+                                        vehicle_type="motorcycle",
+                                        hex_color=info["color"]
                                     )
-                                else:
-                                    if isinstance(self, EntryVideoProcessor):
-                                        self.upload_vehicle_entry(
-                                        plate_text=best_plate["ocr_text"],
-                                        plate_confidence=best_plate["confidence"],
-                                        entry_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
-                                        timestamp_str=timestamp_str,
-                                        screenshot_frame=info['screenshot'],
-                                        vehicle_type=info['label'],
-                                        hex_color=info['color']
-                                    )
-                                    else:
-                                        self.upload_vehicle_exit(
-                                            plate_text=best_plate["ocr_text"],
-                                            plate_confidence=best_plate["confidence"],
-                                            exit_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
-                                            timestamp_str=timestamp_str,
-                                            screenshot_frame=info['screenshot'],
-                                            vehicle_type=info['label'],
-                                            hex_color=info['color'],
-                                        )
-
 
                 self.logged_lost_ids.add(lost_id)
 
@@ -1380,6 +1708,7 @@ class EntryVideoProcessor:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         return annotated_frame, detections
+   
     def frame_producer_ffmpeg(self):
         while self.running and self.ffmpeg_process and self.ffmpeg_process.stdout:
             raw_frame = self.ffmpeg_process.stdout.read(self.frame_size)
@@ -1388,16 +1717,11 @@ class EntryVideoProcessor:
             frame = np.frombuffer(raw_frame, np.uint8).reshape((self.frame_height, self.frame_width, 3))
 
             while not self.frame_queue.empty():
-                try:
-                    self.frame_queue.get_nowait()
-                except queue.Empty:
-                    break
+                self.frame_queue.get_nowait()
+            self.frame_queue.put(frame)
 
             time.sleep(0.03)
     def frame_producer_opencv(self):
-        fps = self.video_capture.get(cv2.CAP_PROP_FPS)
-        frame_delay = 1.0 / fps if fps > 0 else 0.033  # fallback to ~30 FPS
-
         while self.running:
             ret, frame = self.video_capture.read()
             if not ret:
@@ -1406,16 +1730,12 @@ class EntryVideoProcessor:
 
             frame = cv2.resize(frame, (self.frame_width, self.frame_height))
 
-            # Drop old frames to avoid queue buildup
             while not self.frame_queue.empty():
-                try:
-                    self.frame_queue.get_nowait()
-                except queue.Empty:
-                    break
-
+                self.frame_queue.get_nowait()
             self.frame_queue.put(frame)
 
-            time.sleep(frame_delay)
+            time.sleep(1 / 30)  # ~30 FPS
+
 
     def frame_producer(self, cap):
         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -1475,10 +1795,9 @@ class EntryVideoProcessor:
                 if frame_count > 100:
                     start_time = time.time()
                     frame_count = 0
-
+#test 
     def start(self):
         if self.running:
-
             return
 
         self.running = True
@@ -1487,14 +1806,9 @@ class EntryVideoProcessor:
         self.frame_size = self.frame_width * self.frame_height * 3
         if self.ocr is None:
             self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
-        if not hasattr(self, 'model') or self.model is None:
-            self.model = YOLO(self.model_path)  # or self.model_path if you've saved it
-            self.model.to('cuda')
-            print(f"✅ YOLO running on: {self.model.device}")
 
-        is_rtsp = self.video_path.startswith("rtsp://")
+        is_rtsp = isinstance(self.video_path, str) and self.video_path.startswith("rtsp://")
         self.ffmpeg_process = None
-        
 
         if is_rtsp:
             print("📡 Starting RTSP stream using FFmpeg pipe...")
@@ -1535,7 +1849,6 @@ class EntryVideoProcessor:
         self.processor_thread = Thread(target=self.frame_processor)
         self.emit_thread = Thread(target=self.emit_frames)
 
-
         for t in [self.producer_thread, self.processor_thread, self.emit_thread]:
             t.daemon = True
             t.start()
@@ -1568,8 +1881,5 @@ class EntryVideoProcessor:
         self.logged_lost_ids.clear()
         self.plate_buffer.clear()
         self.class_counts.clear()
-        self.model = None
 
         print("🛑 Video processing stopped and buffers cleared.")
-
-
