@@ -275,6 +275,7 @@ class VideoProcessor:
                     customer_id = customer.customer_id
                     
                 # Create new vehicle entry
+                status =  "assigned" if vehicle_type.lower() in ["bicycle", "motorcycle"] else "unassigned"
                 entry = VehicleEntry(
                     entry_id=str(uuid.uuid4()),
                     plate_number=plate_text,
@@ -284,7 +285,7 @@ class VideoProcessor:
                     vehicle_type=vehicle_type,  # Default or based on detection
                     hex_color=hex_color,  # Default or detected color
                     guard_id=self.active_guard_id,
-                    status='unassigned'
+                    status=status
                 )
                 
                 try:
@@ -426,6 +427,7 @@ class VideoProcessor:
                             session_record.exit_id = exit_record.exit_id
                             session_record.end_time = exit_record.exit_time
                             session_record.status = 'completed'
+                            
 
                             # ✅ Calculate duration in minutes
                             if session_record.end_time and session_record.start_time:
@@ -1211,7 +1213,7 @@ class EntryVideoProcessor:
                     vehicle_type=vehicle_type,  # Default or based on detection
                     hex_color=hex_color,  # Default or detected color
                     guard_id=self.active_guard_id,
-                    status='status'
+                    status=status
                 )
                 
                 try:

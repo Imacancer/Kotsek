@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify,Response, stream_with_context
 from models.vehicle_entry import VehicleEntry
 from models.parking_lot import ParkingLot
+from models.customer import ParkingCustomer
 from sqlalchemy import not_, or_
 from datetime import datetime
 import json
@@ -22,7 +23,8 @@ def stream_unassigned_vehicles():
                 for vehicle in unassigned_vehicles:
                     entry_time = vehicle.entry_time.strftime('%H:%M')
                     entry_date = vehicle.entry_time.strftime('%Y-%m-%d')
-                    
+                    customer = ParkingCustomer.query.filter_by(plate_number=vehicle.plate_number).first()
+                    is_registered = customer.is_registered if customer else False
                     vehicles_data.append({
                         'id': str(vehicle.entry_id),
                         'image': vehicle.image_url or '/default-vehicle.png',
@@ -31,7 +33,8 @@ def stream_unassigned_vehicles():
                         'plate': vehicle.plate_number,
                         'color': vehicle.hex_color,
                         'date': entry_date,
-                        'created_at': vehicle.created_at.isoformat()
+                        'created_at': vehicle.created_at.isoformat(),
+                        'registered': "Yes" if is_registered else "No"
                     })
                 
                 # Send the data as a server-sent event

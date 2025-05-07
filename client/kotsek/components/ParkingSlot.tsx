@@ -11,6 +11,8 @@ export interface ParkingSlot {
   status: "available" | "occupied" | "reserved";
   plate_number?: string;
   current_vehicle_id?: string;
+  section: string;
+  vehicle_type?: string;
 }
 
 interface ParkingSlotProps {
@@ -188,43 +190,56 @@ const ParkingSlotsComponent = ({
 
   // Create placeholder arrays for consistent layout
   const topSlots = Array(13)
-    .fill(null)
-    .map((_, index) => {
-      const slot = sortedTopData.find((s) => s.slot_number === index + 1);
-      return (
-        slot || {
-          id: `empty-top-${index}`,
-          slot_number: index + 1,
-          status: "available" as const,
-        }
-      );
-    });
-
+  .fill(null)
+  .map((_, index) => {
+    const slot = sortedTopData.find((s) => s.slot_number === index + 1);
+    return (
+      slot || {
+        id: `empty-top-${index}`,
+        slot_number: index + 1,
+        status: "available" as const,
+        section: "top",
+        lot_id: "",
+        plate_number: "",
+        current_vehicle_id: "",
+      }as ParkingSlot
+    );
+  });
   const leftSlots = Array(10)
-    .fill(null)
-    .map((_, index) => {
-      const slot = sortedLeftData.find((s) => s.slot_number === index + 1);
-      return (
-        slot || {
-          id: `empty-left-${index}`,
-          slot_number: index + 1,
-          status: "available" as const,
-        }
-      );
-    });
+  .fill(null)
+  .map((_, index) => {
+    const slot = sortedLeftData.find((s) => s.slot_number === index + 1);
+    return (
+      slot || {
+        id: `empty-left-${index}`,
+        slot_number: index + 1,
+        status: "available" as const,
+        section: "left",
+        lot_id: "",
+        plate_number: "",
+        current_vehicle_id: "",
+      }as ParkingSlot
+    );
+  });
+
 
   const rightSlots = Array(9)
-    .fill(null)
-    .map((_, index) => {
-      const slot = sortedRightData.find((s) => s.slot_number === index + 1);
-      return (
-        slot || {
-          id: `empty-right-${index}`,
-          slot_number: index + 1,
-          status: "available" as const,
-        }
-      );
-    });
+  .fill(null)
+  .map((_, index) => {
+    const slot = sortedRightData.find((s) => s.slot_number === index + 1);
+    return (
+      slot || {
+        id: `empty-right-${index}`,
+        slot_number: index + 1,
+        status: "available" as const,
+        section: "right",
+        lot_id: "",
+        plate_number: "",
+        current_vehicle_id: "",
+      }as ParkingSlot
+    );
+  });
+
 
   // Create fixed-size arrays for each center row
   const centerRowsCount = [14, 14, 14, 14]; // 4 rows with 14 slots each
@@ -240,6 +255,10 @@ const ParkingSlotsComponent = ({
           id: `empty-center-${slotCounter}`,
           slot_number: slotCounter,
           status: "available" as const,
+          section: "center",
+          lot_id: "",
+          plate_number: "",
+          current_vehicle_id: "",
         }
       );
       slotCounter++;
@@ -320,13 +339,13 @@ const ParkingSlotsComponent = ({
                   {topSlots.map((slot) => (
                     <ParkingSlotItem
                       key={`top-${slot.slot_number}`}
-                      id={slot.id}
+                      id={"lot_id" in slot && slot.lot_id ? slot.lot_id : slot.id || ""}
                       slot_number={slot.slot_number}
                       status={slot.status}
                       section="top"
-                      plate_number={slot.plate_number}
+                      plate_number={"plate_number" in slot ? slot.plate_number : ""}
                       lot_id={slot.lot_id}
-                      current_vehicle_id={slot.current_vehicle_id}
+                      current_vehicle_id={"current_vehicle_id" in slot ? slot.current_vehicle_id : ""}
                       onSlotClick={onSlotClick}
                     />
                   ))}
@@ -396,13 +415,13 @@ const ParkingSlotsComponent = ({
                         style={{ order: slot.slot_number }}
                       >
                         <ParkingSlotItem
-                          id={slot.id}
+                          id={"lot_id" in slot && slot.lot_id ? slot.lot_id : slot.id || ""}
                           slot_number={slot.slot_number}
                           status={slot.status}
                           section="left"
-                          plate_number={slot.plate_number}
+                          plate_number={"plate_number" in slot ? slot.plate_number : ""}
                           lot_id={slot.lot_id}
-                          current_vehicle_id={slot.current_vehicle_id}
+                          current_vehicle_id={"current_vehicle_id" in slot ? slot.current_vehicle_id : ""}
                           onSlotClick={onSlotClick}
                         />
                       </div>
@@ -425,13 +444,13 @@ const ParkingSlotsComponent = ({
                     {centerSlots[0].map((slot) => (
                       <ParkingSlotItem
                         key={`center-upper-${slot.slot_number}`}
-                        id={slot.id}
+                        id={"lot_id" in slot && slot.lot_id ? slot.lot_id : slot.id || ""}
                         slot_number={slot.slot_number}
                         status={slot.status}
                         section="center-upper"
-                        plate_number={slot.plate_number}
+                        plate_number={"plate_number" in slot ? slot.plate_number : ""}
                         lot_id={slot.lot_id}
-                        current_vehicle_id={slot.current_vehicle_id}
+                        current_vehicle_id={"current_vehicle_id" in slot ? slot.current_vehicle_id : ""}
                         onSlotClick={onSlotClick}
                       />
                     ))}
@@ -448,13 +467,13 @@ const ParkingSlotsComponent = ({
                     {centerSlots[1].map((slot) => (
                       <ParkingSlotItem
                         key={`center-lower-${slot.slot_number}`}
-                        id={slot.id}
+                        id={"lot_id" in slot && slot.lot_id ? slot.lot_id : slot.id || ""}
                         slot_number={slot.slot_number}
                         status={slot.status}
                         section="center-lower"
-                        plate_number={slot.plate_number}
+                        plate_number={"plate_number" in slot ? slot.plate_number : ""}
                         lot_id={slot.lot_id}
-                        current_vehicle_id={slot.current_vehicle_id}
+                        current_vehicle_id={"current_vehicle_id" in slot ? slot.current_vehicle_id : ""}
                         onSlotClick={onSlotClick}
                       />
                     ))}
@@ -475,13 +494,13 @@ const ParkingSlotsComponent = ({
                     {centerSlots[2].map((slot) => (
                       <ParkingSlotItem
                         key={`center-row3-${slot.slot_number}`}
-                        id={slot.id}
+                        id={"lot_id" in slot && slot.lot_id ? slot.lot_id : slot.id || ""}
                         slot_number={slot.slot_number}
                         status={slot.status}
                         section="center"
-                        plate_number={slot.plate_number}
+                        plate_number={"plate_number" in slot ? slot.plate_number : ""}
                         lot_id={slot.lot_id}
-                        current_vehicle_id={slot.current_vehicle_id}
+                        current_vehicle_id={"current_vehicle_id" in slot ? slot.current_vehicle_id : ""}
                         onSlotClick={onSlotClick}
                       />
                     ))}
@@ -498,13 +517,13 @@ const ParkingSlotsComponent = ({
                     {centerSlots[3].map((slot) => (
                       <ParkingSlotItem
                         key={`center-row4-${slot.slot_number}`}
-                        id={slot.id}
+                        id={"lot_id" in slot && slot.lot_id ? slot.lot_id : slot.id || ""}
                         slot_number={slot.slot_number}
                         status={slot.status}
                         section="center"
-                        plate_number={slot.plate_number}
+                        plate_number={"plate_number" in slot ? slot.plate_number : ""}
                         lot_id={slot.lot_id}
-                        current_vehicle_id={slot.current_vehicle_id}
+                        current_vehicle_id={"current_vehicle_id" in slot ? slot.current_vehicle_id : ""}
                         onSlotClick={onSlotClick}
                       />
                     ))}
@@ -529,13 +548,13 @@ const ParkingSlotsComponent = ({
                         style={{ order: slot.slot_number }}
                       >
                         <ParkingSlotItem
-                          id={slot.id}
+                          id={"lot_id" in slot && slot.lot_id ? slot.lot_id : slot.id || ""}
                           slot_number={slot.slot_number}
                           status={slot.status}
                           section="right"
-                          plate_number={slot.plate_number}
+                          plate_number={"plate_number" in slot ? slot.plate_number : ""}
                           lot_id={slot.lot_id}
-                          current_vehicle_id={slot.current_vehicle_id}
+                          current_vehicle_id={"current_vehicle_id" in slot ? slot.current_vehicle_id : ""}
                           onSlotClick={onSlotClick}
                         />
                       </div>

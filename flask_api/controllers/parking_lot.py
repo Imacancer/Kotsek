@@ -6,7 +6,7 @@ from models.parking_slot import ParkingSlot
 from models.parking_lot import ParkingLot
 from models.parking_session import ParkingSession
 from models.customer import ParkingCustomer
-import uuid
+from uuid import UUID
 from datetime import datetime
 
 parking_bp = Blueprint('parking', __name__)
@@ -23,6 +23,7 @@ def assign_parking_slot():
     slot_section = data.get('slot_section')
     entry_id = data.get('entry_id')
     lot_id = data.get('lot_id')
+    slot_number = data.get('slot_number') 
     
     try:
         # Check if vehicle entry exists and is unassigned
@@ -87,67 +88,78 @@ def assign_parking_slot():
 
 @parking_bp.route('/parking/release-slot', methods=['POST'])
 def release_parking_slot():
+    print("🔔 [DEBUG] Entered release_parking_slot endpoint")
     data = request.json
-    
+    print("📦 [DEBUG] Incoming request data:", data)
     if not data:
         return jsonify({"error": "No data provided"}), 400
     
     slot_id = data.get('id')
     section = data.get('section')
-    exit_id = data.get('exit_id')  # Add this parameter to track the exit
-    
+    slot_number = data.get('slot_number')
+    exit_id = data.get('exit_id')
+    print(f"📍 [DEBUG] slot_id: {slot_id}, section: {section}, slot_number: {slot_number}, exit_id: {exit_id}")
     try:
+        parking_slot = None
 
-        
-        # First try to find by slot_id (assuming it's a UUID)
+        # ✅ Try finding by UUID if valid
         if slot_id:
-            parking_slot = ParkingSlot.query.get(slot_id)
-        
-        # If not found and we have a section, try using the section and slot_number
-        if not parking_slot and section:
-            parking_slot = ParkingSlot.query.filter_by(
-                section=section,
-                slot_number=slot_id
-            ).first()
-        
+            try:
+                uuid_obj = UUID(slot_id)
+                parking_slot = ParkingSlot.query.get(uuid_obj)
+            except (ValueError, TypeError):
+                pass  # Not a valid UUID, will fall back
+
+        # ✅ Fallback: Try finding by section and slot_number
+        if not parking_slot and section and slot_number:
+            try:
+                parking_slot = ParkingSlot.query.filter_by(
+                    section=section,
+                    slot_number=int(slot_number)
+                ).first()
+            except Exception as e:
+                return jsonify({"error": f"Invalid slot_number: {e}"}), 400
+
         if not parking_slot:
             return jsonify({"error": "Parking slot not found"}), 404
             
         if parking_slot.status != 'occupied':
-            return jsonify({"error": f"Parking slot is not occupied (current status: {parking_slot.status})"}), 409
-        
-        # Get the vehicle entry to update its status
+            return jsonify({
+                "error": f"Parking slot is not occupied (current status: {parking_slot.status})"
+            }), 409
+
+        # ✅ Get vehicle entry
         vehicle_entry = VehicleEntry.query.filter_by(entry_id=parking_slot.current_vehicle_id).first()
-        
-        # Find and update the active parking session
+
+        # ✅ Get and complete active session
         active_session = ParkingSession.query.filter_by(
-            slot_id=slot_id,
+            slot_id=parking_slot.slot_id,
             status='active'
         ).order_by(ParkingSession.start_time.desc()).first()
-        
+
         if active_session:
             active_session.end_time = datetime.utcnow()
             active_session.status = 'completed'
-            
-            # Calculate duration in minutes
-            duration = active_session.end_time - active_session.start_time
-            active_session.duration_minutes = int(duration.total_seconds() / 60)
-            
-            # Link to exit record if provided
+
+            # ✅ Duration in minutes
+            if active_session.start_time:
+                duration = active_session.end_time - active_session.start_time
+                active_session.duration_minutes = int(duration.total_seconds() // 60)
+
             if exit_id:
                 active_session.exit_id = exit_id
-        
-        # Update parking slot
+
+        # ✅ Update parking slot
         parking_slot.status = 'available'
-        parking_slot.current_vehicle_id = None
+        parking_slot.current_vehicle_id = None  # Will be NULL in DB
         parking_slot.updated_at = datetime.utcnow()
-        
-        # Update vehicle entry if it exists
+
+        # ✅ Update vehicle
         if vehicle_entry:
             vehicle_entry.status = 'exited'
-        
+
         db.session.commit()
-        
+
         response_data = {
             "success": True,
             "message": f"Slot {parking_slot.section}-{parking_slot.slot_number} released",
@@ -159,19 +171,19 @@ def release_parking_slot():
                 "lot_id": parking_slot.lot_id
             }
         }
-        
+
         if active_session:
             response_data["data"]["session"] = {
                 "session_id": str(active_session.session_id),
                 "plate_number": active_session.plate_number,
                 "duration_minutes": active_session.duration_minutes
             }
-        
+
         return jsonify(response_data), 200
-        
+
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 @parking_bp.route('/parking/get-parking-status', methods=['GET'])
 def get_slots_by_vehicle_type():
@@ -229,6 +241,7 @@ def get_slots_by_vehicle_type():
                 response_data["motorcycle"].append(slot_data)
             elif slot.vehicle_type == 'bicycle':
                 # For bicycles, add to flat list without sections
+                slot_data["section"] = slot.section
                 response_data["bicycle"].append(slot_data)
         
         # Get statistics for each vehicle type

@@ -38,6 +38,7 @@ type Vehicle = {
   color: string;
   date: string;
   created_at: string;
+  registered: string;
 };
 
 export default function UnassignedVehiclesTable() {
@@ -175,7 +176,7 @@ export default function UnassignedVehiclesTable() {
           </Alert>
         )}
 
-        <div className="rounded-md border">
+        <div className="rounded-md border max-h-[300px] overflow-y-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -225,7 +226,7 @@ export default function UnassignedVehiclesTable() {
                     <SortIcon field="date" />
                   </div>
                 </TableHead>
-                <TableHead className="w-24">Actions</TableHead>
+                <TableHead className="text-center">Registered</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -264,34 +265,8 @@ export default function UnassignedVehiclesTable() {
                     <TableCell>
                       {new Date(vehicle.date).toLocaleDateString()}
                     </TableCell>
-                    <TableCell>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon">
-                            <MoreHorizontal className="h-4 w-4" />
-                            <span className="sr-only">Open menu</span>
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onClick={() => {
-                              // View details action
-                              console.log("View", vehicle.id);
-                            }}
-                          >
-                            View Details
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => {
-                              // Assign to parking lot action
-                              console.log("Assign", vehicle.id);
-                              // Here you would typically open a modal to select a parking lot
-                            }}
-                          >
-                            Assign to Parking Lot
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                    <TableCell className="text-center">
+                    {vehicle.registered}
                     </TableCell>
                   </TableRow>
                 ))
