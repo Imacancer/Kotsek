@@ -35,6 +35,8 @@ interface MotorcycleDialogProps {
     status: string;
     plate_number?: string;
     current_vehicle_id?: string;
+    section: string;       // ✅ Add this
+    lot_id: string; 
   }>;
   selectedVehicle: string | null;
   setSelectedVehicle: (value: string | null) => void;
@@ -43,7 +45,7 @@ interface MotorcycleDialogProps {
     plate: string;
     type: string;
   }>;
-  onAssignSlot: (slotId: string) => void;
+  onAssignSlot: (slot_number: number, section: string, lot_id: string) => void;
   onReleaseSlot: (slotId: string) => void;
 }
 
@@ -158,7 +160,7 @@ const MotorcycleDialog = ({
                                 variant="default"
                                 size="sm"
                                 disabled={!selectedVehicle}
-                                onClick={() => onAssignSlot(slot.id)}
+                                onClick={() => onAssignSlot(slot.slot_number, slot.section, slot.lot_id)}
                               >
                                 Assign
                               </Button>
