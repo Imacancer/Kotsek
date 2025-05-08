@@ -19,12 +19,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import create_engine
 from db.db import db
 from supabase import create_client, Client
-
+import subprocess
 # Import models
 from models.vehicle_entry import VehicleEntry
 from models.vehicle_exit import VehicleExit
 from models.customer import ParkingCustomer
 from models.guards import Guard
+from models.parking_session import ParkingSession
 
 # Load environment variables
 load_dotenv()
@@ -50,7 +51,10 @@ class VideoProcessor:
         self.producer_thread = None
         self.processor_thread = None
         self.emit_thread = None
-        self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=True)
+        self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
+        self.model_path = model_path
+        self._frame_index = 0
+
         
         # Tracking variables
         self.line_x = 250  # Line position for counting
@@ -59,11 +63,8 @@ class VideoProcessor:
         self.detection_history = {}  # Store detection history for each track ID
         self.plate_read_ids = set()
         self.plates_detected_ids = set()
-        self.plate_buffer = {}  
-
         self.plate_buffer = {}
-        self.crossed_ids = set()
-        self.detection_history = {}
+        self.previous_centers = {}  # Store previous centers for each track ID
         self.logged_lost_ids = set()
         
         # Create SQLAlchemy engine for when we need a session outside Flask context
@@ -107,6 +108,7 @@ class VideoProcessor:
             
             roi = image[y1:y2, x1:x2]
             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 255), 2)
             thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                         cv2.THRESH_BINARY, 11, 2)
             
@@ -123,7 +125,19 @@ class VideoProcessor:
     
     @staticmethod
     def is_valid_plate_format(plate_text):
-        return re.fullmatch(r"[A-Z]{3} \d{4}", plate_text.strip()) is not None
+        # Remove all non-alphanumeric characters (e.g., -, ., spaces)
+        cleaned = re.sub(r'[^A-Za-z0-9]', '', plate_text).upper()
+
+        # Check if it matches the pattern ABC1234
+        if re.fullmatch(r'[A-Z]{3}\d{4}', cleaned):
+            # Format it as ABC 1234
+            formatted = f"{cleaned[:3]} {cleaned[3:]}"
+            return formatted
+        elif re.fullmatch(r'\d{3}[A-Z]{3}', cleaned):  # Motorcycle plate
+            formatted = f"{cleaned[:3]} {cleaned[3:]}"
+            return formatted
+
+        return None
     
     def upload_vehicle_entry(self, plate_text, plate_confidence, entry_time, screenshot_frame, timestamp_str, vehicle_type, hex_color):
         print(f"🔍 Attempting upload for plate: {plate_text}")
@@ -210,6 +224,69 @@ class VideoProcessor:
             except Exception as e:
                 print(f"❌ Database connection failed: {str(e)}")
         
+            with Session(self.engine) as session:
+                # First, check if this plate exists in the customer table
+                customer = session.query(ParkingCustomer).filter_by(plate_number=plate_text).first()
+                
+                if not customer:
+                    # Create a temporary customer record with minimal information
+                    new_customer = ParkingCustomer(
+                        first_name="Haerin",
+                        last_name="Kang",
+                        plate_number=plate_text,
+                        is_registered=False,  # Mark as unregistered
+                        color=hex_color,
+                        vehicle_type=vehicle_type
+                    )
+                    session.add(new_customer)
+                    session.commit()
+                    try:
+                        session.flush()  # Ensure the customer is in the DB before referencing it
+                        customer_id = new_customer.customer_id
+                    except Exception as e:
+                        print(f"❌ Failed to create temporary customer: {e}")
+                        session.rollback()
+                        return
+                else:
+                    customer_id = customer.customer_id
+                    
+                # Create new vehicle entry
+                entry = VehicleEntry(
+                    entry_id=str(uuid.uuid4()),
+                    plate_number=plate_text,
+                    entry_time=datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S"),
+                    image_url=public_url,
+                    customer_id=customer_id,
+                    vehicle_type=vehicle_type,  # Default or based on detection
+                    hex_color=hex_color,  # Default or detected color
+                    guard_id=self.active_guard_id,
+                    status='unassigned'
+                )
+                
+                try:
+                    session.add(entry)
+                    session.commit()
+                    print("✅ Entry inserted into database")
+                    
+                    entry_status = "assigned" if self.active_guard_id else "unassigned"
+                    self.socketio.emit("new_vehicle_entry", {
+                        "entry_id": str(entry.entry_id),
+                        "plate_number": plate_text,
+                        "entry_time": entry_time,
+                        "image_url": public_url,
+                        "guard_id": str(self.active_guard_id) if self.active_guard_id else None,
+                        "status": entry_status
+                    })
+                    try:
+                        import requests
+                        requests.get("http://localhost:5000/api/unassigned-vehicles")
+                        print("📣 Triggered /api/unassigned-vehicles")
+                    except Exception as e:
+                        print(f"❌ Failed to notify unassigned vehicles: {e}")
+
+                except Exception as e:
+                    session.rollback()
+                    print(f"❌ Failed to insert entry: {e}")
 
         except Exception as e:
             print(f"❌ Exception in upload_vehicle_entry: {e}")
@@ -272,6 +349,44 @@ class VideoProcessor:
                     session.add(exit_record)
                     session.commit()
                     print("✅ Exit inserted into database")
+                    # ✅ Update parking session and slot status
+                    try:
+                        # Find active parking session matching the entry
+                        session_record = session.query(ParkingSession)\
+                            .filter_by(entry_id=entry.entry_id, status='active', exit_id=None)\
+                            .order_by(ParkingSession.start_time.desc())\
+                            .first()
+
+                        if session_record:
+                            session_record.exit_id = exit_record.exit_id
+                            session_record.end_time = exit_record.exit_time
+
+                            session_record.status = 'completed'
+                            if session_record.end_time and session_record.start_time:
+                                duration = session_record.end_time - session_record.start_time
+                                session_record.duration_minutes = int(duration.total_seconds() // 60)
+
+                            # Mark the slot as available
+                            if session_record.slot:
+                                session_record.slot.status = 'available'
+
+                            session.commit()
+                            print(f"✅ Parking session completed for plate {plate_text}")
+                        else:
+                            print(f"⚠️ No active session found for plate {plate_text}")
+
+                    except Exception as e:
+                        session.rollback()
+                        print(f"❌ Failed to update parking session: {e}")
+
+                    # ✅ Trigger parking status update
+                    try:
+                        import requests
+                        requests.get("http://localhost:5000/parking/get-parking-status")
+                        print("📣 Triggered /parking/get-parking-status")
+                    except Exception as e:
+                        print(f"❌ Failed to notify parking status: {e}")
+
 
                     self.socketio.emit("new_vehicle_exit", {
                         "exit_id": str(exit_record.exit_id),
@@ -293,8 +408,15 @@ class VideoProcessor:
 
 
 
-    def process_frame(self, frame, size=(640, 480)):
-        frame = cv2.resize(frame, size)
+    def process_frame(self, frame, size=None):
+        print(f"✅ YOLO running on: {self.model.device}")
+        filtered_boxes = []
+        filtered_track_ids = []
+        filtered_confidences = []
+        filtered_class_indices = []
+        print(self.active_guard_id)
+        if size:
+            frame = cv2.resize(frame, size)
         original_frame = frame.copy()  # Clean version for screenshot
         best_plate_frame = None
 
@@ -302,10 +424,15 @@ class VideoProcessor:
         detections = []
 
         target_classes = {'car', 'motorcycle', 'bike', 'bicycle'}
-        plate_line_x = 140  # Detection boundary
+        plate_line_x = 320  # Detection boundary
 
         # Draw plate detection boundary
         cv2.line(frame, (plate_line_x, 0), (plate_line_x, frame.shape[0]), (0, 255, 0), 2)
+
+        moto_line_x = 640 if isinstance(self, EntryVideoProcessor) else 220
+        cv2.line(frame, (moto_line_x, 0), (moto_line_x, frame.shape[0]), (0, 0, 255), 2)
+        cv2.putText(frame, "Motorcycle Line", (moto_line_x + 10, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
         cv2.putText(frame, "Plate Detection Boundary", (plate_line_x + 10, 60), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
@@ -337,6 +464,14 @@ class VideoProcessor:
                 cx = (x1 + x2) // 2
                 cy = (y1 + y2) // 2
 
+                direction = None
+                if track_id in self.previous_centers:
+                    prev_cx = self.previous_centers[track_id]
+                    if cx < prev_cx:
+                        direction = "left"
+                    elif cx > prev_cx:
+                        direction = "right"
+                self.previous_centers[track_id] = cx
                 # Draw object center and ID
                 cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
                 cv2.putText(frame, f"ID:{track_id}", (x1, y1-10), 
@@ -356,10 +491,18 @@ class VideoProcessor:
                             plate_coords = plate_box.xyxy.cpu().numpy().tolist()[0]
                             px1, py1, px2, py2 = map(int, plate_coords)
                             plate_roi = roi[py1:py2, px1:px2]
-                            plate_text = self.extract_text_from_roi(plate_roi, [[0, 0, px2-px1, py2-py1]])
+                            raw_text = self.extract_text_from_roi(plate_roi, [[0, 0, px2-px1, py2-py1]])
 
-                            if plate_text.strip() == "":
+                            if raw_text.strip() == "":
                                 continue
+                            # ✅ Normalize plate format: ABC1234 → ABC 1234
+                            cleaned = re.sub(r'[^A-Za-z0-9]', '', raw_text).upper()
+                            if re.fullmatch(r'[A-Z]{3}\d{4}', cleaned):
+                                plate_text = f"{cleaned[:3]} {cleaned[3:]}"
+                            elif re.fullmatch(r'\d{3}[A-Z]{3}', cleaned):  # Motorcycle plate
+                                plate_text = f"{cleaned[:3]} {cleaned[3:]}"
+                            else:
+                                plate_text = raw_text  # fallback if it doesn't match
 
                             new_plate = {
                                 "label": "Plate",
@@ -452,7 +595,65 @@ class VideoProcessor:
 
                             except Exception as e:
                                 print(f"❌ Exception in upload_vehicle_entry: {e}")
+                    
+                        label = info["label"].lower()
+                        direction = info.get("direction", None)
+                        if label == "bicycle":
+                            if isinstance(self, EntryVideoProcessor):
+                                self.upload_vehicle_entry("NO PLATE", 0.0, info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), info["screenshot"], info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), vehicle_type="bicycle", hex_color=info["color"])
+                            else:
+                                self.upload_vehicle_exit("NO PLATE", 0.0, info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), info["screenshot"], info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), vehicle_type="bicycle", hex_color=info["color"])
 
+                        best_plate = self.plate_buffer.get(lost_id)
+                        if best_plate and self.is_valid_plate_format(best_plate["ocr_text"]):
+                            plate_text = best_plate["ocr_text"]
+                            plate_confidence = best_plate["confidence"]
+                            timestamp_str = info['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+                            if label == "motorcycle":
+                                if isinstance(self, EntryVideoProcessor) and direction == "left":
+
+                                    self.upload_vehicle_exit(
+                                            plate_text=best_plate["ocr_text"],
+                                            plate_confidence=best_plate["confidence"],
+                                            exit_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
+                                            timestamp_str=timestamp_str,
+                                            screenshot_frame=info['screenshot'],
+                                            vehicle_type=info['label'],
+                                            hex_color=info['color'],
+                                        )
+                                elif isinstance(self, VideoProcessor) and direction == "right":
+                                    self.upload_vehicle_entry(
+                                        plate_text=best_plate["ocr_text"],
+                                        plate_confidence=best_plate["confidence"],
+                                        entry_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
+                                        timestamp_str=timestamp_str,
+                                        screenshot_frame=info['screenshot'],
+                                        vehicle_type=info['label'],
+                                        hex_color=info['color']
+                                    )
+                                else:
+                                    if isinstance(self, EntryVideoProcessor):
+                                        self.upload_vehicle_entry(
+                                        plate_text=best_plate["ocr_text"],
+                                        plate_confidence=best_plate["confidence"],
+                                        entry_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
+                                        timestamp_str=timestamp_str,
+                                        screenshot_frame=info['screenshot'],
+                                        vehicle_type=info['label'],
+                                        hex_color=info['color']
+                                    )
+                                    else:
+                                        self.upload_vehicle_exit(
+                                            plate_text=best_plate["ocr_text"],
+                                            plate_confidence=best_plate["confidence"],
+                                            exit_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
+                                            timestamp_str=timestamp_str,
+                                            screenshot_frame=info['screenshot'],
+                                            vehicle_type=info['label'],
+                                            hex_color=info['color'],
+                                        )
+                        
+        
                 self.logged_lost_ids.add(lost_id)
 
         # Annotate frame
@@ -477,26 +678,49 @@ class VideoProcessor:
 
         return annotated_frame, detections
 
-    def frame_producer(self, cap):
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_delay = 1.0 / fps if fps > 0 else 0.033
+    def frame_producer_ffmpeg(self):
+        while self.running and self.ffmpeg_process and self.ffmpeg_process.stdout:
+            raw_frame = self.ffmpeg_process.stdout.read(self.frame_size)
+            if not raw_frame:
+                continue
+            frame = np.frombuffer(raw_frame, np.uint8).reshape((self.frame_height, self.frame_width, 3))
+
+            while not self.frame_queue.empty():
+                self.frame_queue.get_nowait()
+            self.frame_queue.put(frame)
+
+            time.sleep(0.03)
+    def frame_producer_opencv(self):
         while self.running:
-            ret, frame = cap.read()
+            ret, frame = self.video_capture.read()
             if not ret:
+                print("🎞️ End of video or read failed.")
                 break
-            while self.frame_queue.full() and self.running:
-                time.sleep(0.01)
-            if not self.frame_queue.full():
-                self.frame_queue.put(frame)
-            time.sleep(frame_delay)
+
+            frame = cv2.resize(frame, (self.frame_width, self.frame_height))
+
+            while not self.frame_queue.empty():
+                self.frame_queue.get_nowait()
+            self.frame_queue.put(frame)
+
+            time.sleep(1 / 30)  # ~30 FPS
+
+
 
     def frame_processor(self):
         while self.running:
             if self.frame_queue.empty():
                 time.sleep(0.01)
                 continue
+
+
             frame = self.frame_queue.get()
-            annotated_frame, detections = self.process_frame(frame)
+            self._frame_index += 1
+
+            # ✅ Skip every N frames (e.g., process every 2nd frame)
+            if self._frame_index % 2 != 0:
+                continue  # skip this frame
+            annotated_frame, detections = self.process_frame(frame, size=(960, 540))
             encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 60]
             _, buffer = cv2.imencode('.jpg', annotated_frame, encode_param)
             frame_data = base64.b64encode(buffer).decode('utf-8')
@@ -533,33 +757,101 @@ class VideoProcessor:
 
     def start(self):
         if self.running:
+
             return
+
         self.running = True
-        self.video_capture = cv2.VideoCapture(self.video_path)
-        if not self.video_capture.isOpened():
-            self.socketio.emit("video_error", {"error": "Video file not available"})
-            self.running = False
-            return
-        self.video_capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-        self.producer_thread = Thread(target=self.frame_producer, args=(self.video_capture,))
+        self.frame_width = 960
+        self.frame_height = 540
+        self.frame_size = self.frame_width * self.frame_height * 3
+        if self.ocr is None:
+            self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
+        if not hasattr(self, 'model') or self.model is None:
+            self.model = YOLO(self.model_path)  # or self.model_path if you've saved it
+
+
+        is_rtsp = self.video_path.startswith("rtsp://")
+        self.ffmpeg_process = None
+        
+
+        if is_rtsp:
+            print("📡 Starting RTSP stream using FFmpeg pipe...")
+
+            self.ffmpeg_cmd = [
+                'ffmpeg',
+                '-rtsp_transport', 'tcp',
+                '-i', self.video_path,
+                '-vf', 'scale=640:480',
+                '-f', 'image2pipe',
+                '-pix_fmt', 'bgr24',
+                '-vcodec', 'rawvideo',
+                '-'
+            ]
+
+            try:
+                self.ffmpeg_process = subprocess.Popen(
+                    self.ffmpeg_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    bufsize=10**8
+                )
+            except Exception as e:
+                print(f"❌ FFmpeg launch failed: {e}")
+                self.running = False
+                return
+
+            self.producer_thread = Thread(target=self.frame_producer_ffmpeg)
+        else:
+            print("📼 Starting video file using OpenCV...")
+            self.video_capture = cv2.VideoCapture(self.video_path)
+            if not self.video_capture.isOpened():
+                print("❌ Failed to open video file.")
+                self.running = False
+                return
+            self.producer_thread = Thread(target=self.frame_producer_opencv)
+
         self.processor_thread = Thread(target=self.frame_processor)
         self.emit_thread = Thread(target=self.emit_frames)
-        self.producer_thread.daemon = True
-        self.processor_thread.daemon = True
-        self.emit_thread.daemon = True
-        self.producer_thread.start()
-        self.processor_thread.start()
-        self.emit_thread.start()
-        print("Video processing started.")
 
+
+        for t in [self.producer_thread, self.processor_thread, self.emit_thread]:
+            t.daemon = True
+            t.start()
+
+        print("✅ Video processing started.")
     def stop(self):
         if not self.running:
             return
+
         self.running = False
-        if self.video_capture:
+
+        # Release video resources
+        if hasattr(self, "ffmpeg_process") and self.ffmpeg_process:
+            self.ffmpeg_process.terminate()
+            self.ffmpeg_process.wait()
+            self.ffmpeg_process = None
+
+        if hasattr(self, "video_capture") and self.video_capture:
             self.video_capture.release()
-        print("Video processing stopped.")
-        print("Final counts:", dict(self.class_counts))
+            self.video_capture = None
+
+        # Clean up OCR to reset its internal state
+        if self.ocr:
+            del self.ocr
+            self.ocr = None
+
+        # Clear detection-related data
+        self.crossed_ids.clear()
+        self.detection_history.clear()
+        self.logged_lost_ids.clear()
+        self.plate_buffer.clear()
+        self.class_counts.clear()
+        self.model = None
+
+        print("🛑 Video processing stopped and buffers cleared.")
+
+
+
 
 
 
@@ -576,7 +868,10 @@ class EntryVideoProcessor:
         self.producer_thread = None
         self.processor_thread = None
         self.emit_thread = None
-        self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=True)
+        self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
+        self.model_path = model_path
+        self._frame_index = 0
+
         
         # Tracking variables
         self.line_x = 250  # Line position for counting
@@ -586,6 +881,7 @@ class EntryVideoProcessor:
         self.plate_read_ids = set()
         self.plates_detected_ids = set()
         self.plate_buffer = {}  
+        self.previous_centers = {} 
 
         self.plate_buffer = {}
         self.crossed_ids = set()
@@ -597,45 +893,6 @@ class EntryVideoProcessor:
         self.active_guard_id = None
 
 
-    def start(self):
-            if self.running:
-                return
-
-            self.running = True
-
-            # Force TCP for RTSP if applicable
-            if self.video_path.startswith("rtsp://"):
-                video_url = self.video_path + "?rtsp_transport=tcp"
-            else:
-                video_url = self.video_path
-
-            self.video_capture = cv2.VideoCapture(video_url)
-
-            # Wait briefly for the camera to initialize
-            retries = 10
-            for attempt in range(retries):
-                if self.video_capture.isOpened():
-                    break
-                print(f"⏳ Attempt {attempt + 1}/{retries} to connect to stream...")
-                time.sleep(1)
-
-            if not self.video_capture.isOpened():
-                print("❌ Unable to open video stream")
-                self.socketio.emit("video_error", {"error": "Failed to open stream"})
-                self.running = False
-                return
-
-            self.video_capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-            self.producer_thread = Thread(target=self.frame_producer, args=(self.video_capture,))
-            self.processor_thread = Thread(target=self.frame_processor)
-            self.emit_thread = Thread(target=self.emit_frames)
-            self.producer_thread.daemon = True
-            self.processor_thread.daemon = True
-            self.emit_thread.daemon = True
-            self.producer_thread.start()
-            self.processor_thread.start()
-            self.emit_thread.start()
-            print("📡 Video stream started.")
 
     def set_active_guard(self, guard_id):
         """Set the active guard for this detection session"""
@@ -674,8 +931,10 @@ class EntryVideoProcessor:
             
             roi = image[y1:y2, x1:x2]
             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            blur = cv2.GaussianBlur(gray, (3, 3), 0)
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 255), 2)
             thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                        cv2.THRESH_BINARY, 11, 2)
+                                        cv2.THRESH_BINARY, 11, 4)
             
             ocr_result = self.ocr.ocr(thresh, cls=True)
             
@@ -690,7 +949,19 @@ class EntryVideoProcessor:
     
     @staticmethod
     def is_valid_plate_format(plate_text):
-        return re.fullmatch(r"[A-Z]{3} \d{4}", plate_text.strip()) is not None
+        # Remove all non-alphanumeric characters (e.g., -, ., spaces)
+        cleaned = re.sub(r'[^A-Za-z0-9]', '', plate_text).upper()
+
+        # Check if it matches the pattern ABC1234
+        if re.fullmatch(r'[A-Z]{3}\d{4}', cleaned):
+            # Format it as ABC 1234
+            formatted = f"{cleaned[:3]} {cleaned[3:]}"
+            return formatted
+        elif re.fullmatch(r'\d{3}[A-Z]{3}', cleaned):  # Motorcycle plate
+            formatted = f"{cleaned[:3]} {cleaned[3:]}"
+            return formatted
+
+        return None
     
     def upload_vehicle_entry(self, plate_text, plate_confidence, entry_time, screenshot_frame, timestamp_str, vehicle_type, hex_color):
         try:
@@ -757,7 +1028,7 @@ class EntryVideoProcessor:
                     session.add(entry)
                     session.commit()
                     print("✅ Entry inserted into database")
-
+                    
                     entry_status = "assigned" if self.active_guard_id else "unassigned"
                     self.socketio.emit("new_vehicle_entry", {
                         "entry_id": str(entry.entry_id),
@@ -767,6 +1038,13 @@ class EntryVideoProcessor:
                         "guard_id": str(self.active_guard_id) if self.active_guard_id else None,
                         "status": entry_status
                     })
+                    try:
+                        import requests
+                        requests.get("http://localhost:5000/api/unassigned-vehicles")
+                        print("📣 Triggered /api/unassigned-vehicles")
+                    except Exception as e:
+                        print(f"❌ Failed to notify unassigned vehicles: {e}")
+
                 except Exception as e:
                     session.rollback()
                     print(f"❌ Failed to insert entry: {e}")
@@ -774,8 +1052,129 @@ class EntryVideoProcessor:
         except Exception as e:
             print(f"❌ Exception in upload_vehicle_entry: {e}")
 
-    def process_frame(self, frame, size=(640, 480)):
-        frame = cv2.resize(frame, size)
+    def upload_vehicle_exit(self, plate_text, plate_confidence, exit_time, screenshot_frame, timestamp_str, vehicle_type, hex_color):
+        try:
+            # Save screenshot to temp PNG file
+            _, buffer = cv2.imencode(".png", screenshot_frame)
+            image_bytes = buffer.tobytes()
+            filename = f"{uuid.uuid4()}.png"
+
+            # Upload to Supabase Storage
+            response = supabase.storage.from_("exit").upload(
+                path=filename,
+                file=image_bytes,
+                file_options={"content-type": "image/png"}
+            )
+
+            if hasattr(response, "error") and response.error:
+                print(f"❌ Supabase upload error: {response.error.message}")
+                return
+
+            public_url = f"{SUPABASE_URL}/storage/v1/object/public/exit/{filename}"
+            print(f"✅ Screenshot uploaded: {public_url}")
+
+            # Create a SQLAlchemy session
+            with Session(self.engine) as session:
+                # Find the latest matching vehicle entry
+                entry = session.query(VehicleEntry)\
+                    .filter(VehicleEntry.plate_number == plate_text)\
+                    .filter(VehicleEntry.entry_time <= datetime.strptime(exit_time, "%Y-%m-%d %H:%M:%S"))\
+                    .order_by(VehicleEntry.entry_time.desc())\
+                    .first()
+
+                if not entry:
+                    print(f"❌ No matching entry found for plate {plate_text} before {exit_time}")
+                    return
+
+                # Find the corresponding customer
+                customer = session.query(ParkingCustomer)\
+                    .filter_by(plate_number=plate_text)\
+                    .first()
+
+                customer_id = customer.customer_id if customer else None
+
+                # Create a new VehicleExit record
+                exit_record = VehicleExit(
+                    exit_id=str(uuid.uuid4()),
+                    plate_number=plate_text,
+                    exit_time=datetime.strptime(exit_time, "%Y-%m-%d %H:%M:%S"),
+                    image_url=public_url,
+                    guard_id=self.active_guard_id,  # Assuming self.active_guard_id exists
+                    customer_id=customer_id,
+                    vehicle_type=vehicle_type,
+                    hex_color=hex_color,
+                    created_at=datetime.utcnow()
+                )
+
+                try:
+                    session.add(exit_record)
+                    session.commit()
+                    print("✅ Exit inserted into database")
+                    # ✅ Update parking session and slot status
+                    try:
+                        # Find active parking session matching the entry
+                        session_record = session.query(ParkingSession)\
+                            .filter_by(entry_id=entry.entry_id, status='active', exit_id=None)\
+                            .order_by(ParkingSession.start_time.desc())\
+                            .first()
+
+                        if session_record:
+                            session_record.exit_id = exit_record.exit_id
+                            session_record.end_time = exit_record.exit_time
+                            
+                            session_record.status = 'completed'
+                            if session_record.end_time and session_record.start_time:
+                                duration = session_record.end_time - session_record.start_time
+                                session_record.duration_minutes = int(duration.total_seconds() // 60)
+
+                            # Mark the slot as available
+                            if session_record.slot:
+                                session_record.slot.status = 'available'
+
+                            session.commit()
+                            print(f"✅ Parking session completed for plate {plate_text}")
+                        else:
+                            print(f"⚠️ No active session found for plate {plate_text}")
+
+                    except Exception as e:
+                        session.rollback()
+                        print(f"❌ Failed to update parking session: {e}")
+
+                    # ✅ Trigger parking status update
+                    try:
+                        import requests
+                        requests.get("http://localhost:5000/parking/get-parking-status")
+                        print("📣 Triggered /parking/get-parking-status")
+                    except Exception as e:
+                        print(f"❌ Failed to notify parking status: {e}")
+
+
+                    self.socketio.emit("new_vehicle_exit", {
+                        "exit_id": str(exit_record.exit_id),
+                        "plate_number": plate_text,
+                        "exit_time": exit_time,
+                        "image_url": public_url,
+                        "guard_id": str(self.active_guard_id) if self.active_guard_id else None,
+                        "customer_id": str(customer_id) if customer_id else None,
+                        "vehicle_type": vehicle_type,
+                        "hex_color": hex_color
+                    })
+
+                except Exception as e:
+                    session.rollback()
+                    print(f"❌ Failed to insert exit record: {e}")
+
+        except Exception as e:
+            print(f"❌ Exception in upload_vehicle_exit: {e}")
+
+    def process_frame(self, frame, size=None):
+        filtered_boxes = []
+        filtered_track_ids = []
+        filtered_confidences = []
+        filtered_class_indices = []
+        print(self.active_guard_id)
+        if size:
+            frame = cv2.resize(frame, size)
         original_frame = frame.copy()  # Clean version for screenshot
         best_plate_frame = None
 
@@ -787,6 +1186,11 @@ class EntryVideoProcessor:
 
         # Draw plate detection boundary
         cv2.line(frame, (plate_line_x, 0), (plate_line_x, frame.shape[0]), (0, 255, 0), 2)
+
+        moto_line_x = 640 if isinstance(self, EntryVideoProcessor) else 220
+        cv2.line(frame, (moto_line_x, 0), (moto_line_x, frame.shape[0]), (0, 0, 255), 2)
+        cv2.putText(frame, "Motorcycle Line", (moto_line_x + 10, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
         cv2.putText(frame, "Plate Detection Boundary", (plate_line_x + 10, 60), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
@@ -817,7 +1221,15 @@ class EntryVideoProcessor:
                 x1, y1, x2, y2 = map(int, box)
                 cx = (x1 + x2) // 2
                 cy = (y1 + y2) // 2
-
+                # Determine direction
+                direction = None
+                if track_id in self.previous_centers:
+                    prev_cx = self.previous_centers[track_id]
+                    if cx < prev_cx:
+                        direction = "left"
+                    elif cx > prev_cx:
+                        direction = "right"
+                self.previous_centers[track_id] = cx
                 # Draw object center and ID
                 cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
                 cv2.putText(frame, f"ID:{track_id}", (x1, y1-10), 
@@ -837,10 +1249,19 @@ class EntryVideoProcessor:
                             plate_coords = plate_box.xyxy.cpu().numpy().tolist()[0]
                             px1, py1, px2, py2 = map(int, plate_coords)
                             plate_roi = roi[py1:py2, px1:px2]
-                            plate_text = self.extract_text_from_roi(plate_roi, [[0, 0, px2-px1, py2-py1]])
+                            raw_text = self.extract_text_from_roi(plate_roi, [[0, 0, px2-px1, py2-py1]])
 
-                            if plate_text.strip() == "":
+                            if raw_text.strip() == "":
                                 continue
+
+                            # ✅ Normalize plate format: ABC1234 → ABC 1234
+                            cleaned = re.sub(r'[^A-Za-z0-9]', '', raw_text).upper()
+                            if re.fullmatch(r'[A-Z]{3}\d{4}', cleaned):
+                                plate_text = f"{cleaned[:3]} {cleaned[3:]}"
+                            elif re.fullmatch(r'\d{3}[A-Z]{3}', cleaned):  # Motorcycle plate
+                                plate_text = f"{cleaned[:3]} {cleaned[3:]}"
+                            else:
+                                plate_text = raw_text  # fallback if it doesn't match
 
                             new_plate = {
                                 "label": "Plate",
@@ -905,6 +1326,7 @@ class EntryVideoProcessor:
             if lost_id not in self.logged_lost_ids:
                 info = self.detection_history.get(lost_id)
                 if info:
+
                     time_since_crossed = (datetime.now() - info["timestamp"]).total_seconds()
                     if time_since_crossed >= 2:
                         print(f"Vehicle ID {lost_id} left view.")
@@ -931,9 +1353,67 @@ class EntryVideoProcessor:
                                 self.plate_buffer.pop(lost_id, None)
                                 self.crossed_ids.discard(lost_id)
                                 self.logged_lost_ids.add(lost_id)
-
                             except Exception as e:
                                 print(f"❌ Exception in upload_vehicle_entry: {e}")
+                        label = info["label"].lower()
+                        direction = info.get("direction", None)
+                        if label == "bicycle":
+                            if isinstance(self, EntryVideoProcessor):
+                                self.upload_vehicle_entry("NO PLATE", 0.0, info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), info["screenshot"], info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), vehicle_type="bicycle", hex_color=info["color"])
+                            else:
+                                self.upload_vehicle_exit("NO PLATE", 0.0, info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), info["screenshot"], info["timestamp"].strftime("%Y-%m-%d %H:%M:%S"), vehicle_type="bicycle", hex_color=info["color"])
+
+                        best_plate = self.plate_buffer.get(lost_id)
+                        if best_plate and self.is_valid_plate_format(best_plate["ocr_text"]):
+                            plate_text = best_plate["ocr_text"]
+                            plate_confidence = best_plate["confidence"]
+                            timestamp_str = info['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+
+
+                            if label == "motorcycle":
+                                if isinstance(self, EntryVideoProcessor) and direction == "left":
+
+                                    self.upload_vehicle_exit(
+                                            plate_text=best_plate["ocr_text"],
+                                            plate_confidence=best_plate["confidence"],
+                                            exit_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
+                                            timestamp_str=timestamp_str,
+                                            screenshot_frame=info['screenshot'],
+                                            vehicle_type=info['label'],
+                                            hex_color=info['color'],
+                                        )
+                                elif isinstance(self, VideoProcessor) and direction == "right":
+                                    self.upload_vehicle_entry(
+                                        plate_text=best_plate["ocr_text"],
+                                        plate_confidence=best_plate["confidence"],
+                                        entry_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
+                                        timestamp_str=timestamp_str,
+                                        screenshot_frame=info['screenshot'],
+                                        vehicle_type=info['label'],
+                                        hex_color=info['color']
+                                    )
+                                else:
+                                    if isinstance(self, EntryVideoProcessor):
+                                        self.upload_vehicle_entry(
+                                        plate_text=best_plate["ocr_text"],
+                                        plate_confidence=best_plate["confidence"],
+                                        entry_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
+                                        timestamp_str=timestamp_str,
+                                        screenshot_frame=info['screenshot'],
+                                        vehicle_type=info['label'],
+                                        hex_color=info['color']
+                                    )
+                                    else:
+                                        self.upload_vehicle_exit(
+                                            plate_text=best_plate["ocr_text"],
+                                            plate_confidence=best_plate["confidence"],
+                                            exit_time=info['timestamp'].strftime("%Y-%m-%d %H:%M:%S"),
+                                            timestamp_str=timestamp_str,
+                                            screenshot_frame=info['screenshot'],
+                                            vehicle_type=info['label'],
+                                            hex_color=info['color'],
+                                        )
+
 
                 self.logged_lost_ids.add(lost_id)
 
@@ -958,6 +1438,33 @@ class EntryVideoProcessor:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         return annotated_frame, detections
+    def frame_producer_ffmpeg(self):
+        while self.running and self.ffmpeg_process and self.ffmpeg_process.stdout:
+            raw_frame = self.ffmpeg_process.stdout.read(self.frame_size)
+            if not raw_frame:
+                continue
+            frame = np.frombuffer(raw_frame, np.uint8).reshape((self.frame_height, self.frame_width, 3))
+
+            while not self.frame_queue.empty():
+                self.frame_queue.get_nowait()
+            self.frame_queue.put(frame)
+
+            time.sleep(0.03)
+    def frame_producer_opencv(self):
+        while self.running:
+            ret, frame = self.video_capture.read()
+            if not ret:
+                print("🎞️ End of video or read failed.")
+                break
+
+            frame = cv2.resize(frame, (self.frame_width, self.frame_height))
+
+            while not self.frame_queue.empty():
+                self.frame_queue.get_nowait()
+            self.frame_queue.put(frame)
+
+            time.sleep(1 / 30)  # ~30 FPS
+
 
     def frame_producer(self, cap):
         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -978,8 +1485,13 @@ class EntryVideoProcessor:
                 time.sleep(0.01)
                 continue
             frame = self.frame_queue.get()
-            annotated_frame, detections = self.process_frame(frame)
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 60]
+            self._frame_index += 1
+
+            # ✅ Skip every N frames (e.g., process every 2nd frame)
+            if self._frame_index % 2 != 0:
+                continue  # skip this frame
+            annotated_frame, detections = self.process_frame(frame, size=(960, 540))
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
             _, buffer = cv2.imencode('.jpg', annotated_frame, encode_param)
             frame_data = base64.b64encode(buffer).decode('utf-8')
             self.result_queue.put({
@@ -1015,38 +1527,88 @@ class EntryVideoProcessor:
 
     def start(self):
         if self.running:
-            return {"success": False, "error": "Already running"}
-        try:
-            self.running = True
+            return
+
+        self.running = True
+        self.frame_width = 960
+        self.frame_height = 540
+        self.frame_size = self.frame_width * self.frame_height * 3
+        if self.ocr is None:
+            self.ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
+
+        is_rtsp = isinstance(self.video_path, str) and self.video_path.startswith("rtsp://")
+        self.ffmpeg_process = None
+
+        if is_rtsp:
+            print("📡 Starting RTSP stream using FFmpeg pipe...")
+
+            self.ffmpeg_cmd = [
+                'ffmpeg',
+                '-rtsp_transport', 'tcp',
+                '-i', self.video_path,
+                '-vf', 'scale=640:480',
+                '-f', 'image2pipe',
+                '-pix_fmt', 'bgr24',
+                '-vcodec', 'rawvideo',
+                '-'
+            ]
+
+            try:
+                self.ffmpeg_process = subprocess.Popen(
+                    self.ffmpeg_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    bufsize=10**8
+                )
+            except Exception as e:
+                print(f"❌ FFmpeg launch failed: {e}")
+                self.running = False
+                return
+
+            self.producer_thread = Thread(target=self.frame_producer_ffmpeg)
+        else:
+            print("📼 Starting video file using OpenCV...")
             self.video_capture = cv2.VideoCapture(self.video_path)
             if not self.video_capture.isOpened():
-                self.socketio.emit("video_error", {"error": "Video file not available"})
+                print("❌ Failed to open video file.")
                 self.running = False
-                raise Exception("Video file not available")
-            self.video_capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-            self.producer_thread = Thread(target=self.frame_producer, args=(self.video_capture,))
-            self.processor_thread = Thread(target=self.frame_processor)
-            self.emit_thread = Thread(target=self.emit_frames)
-            self.producer_thread.daemon = True
-            self.processor_thread.daemon = True
-            self.emit_thread.daemon = True
-            self.producer_thread.start()
-            self.processor_thread.start()
-            self.emit_thread.start()
-            print("Video processing started.")
-        except Exception as e:
-            self.running = False
-            error_msg = f"Failed to start video processing: {str(e)}"
-            print(error_msg)
-            self.socketio.emit("video_error", {"error": error_msg})
-            return {"success": False, "error": error_msg}
+                return
+            self.producer_thread = Thread(target=self.frame_producer_opencv)
 
+        self.processor_thread = Thread(target=self.frame_processor)
+        self.emit_thread = Thread(target=self.emit_frames)
 
+        for t in [self.producer_thread, self.processor_thread, self.emit_thread]:
+            t.daemon = True
+            t.start()
+
+        print("✅ Video processing started.")
     def stop(self):
         if not self.running:
             return
+
         self.running = False
-        if self.video_capture:
+
+        # Release video resources
+        if hasattr(self, "ffmpeg_process") and self.ffmpeg_process:
+            self.ffmpeg_process.terminate()
+            self.ffmpeg_process.wait()
+            self.ffmpeg_process = None
+
+        if hasattr(self, "video_capture") and self.video_capture:
             self.video_capture.release()
-        print("Video processing stopped.")
-        print("Final counts:", dict(self.class_counts))
+            self.video_capture = None
+
+        # Clean up OCR to reset its internal state
+        if self.ocr:
+            del self.ocr
+            self.ocr = None
+
+        # Clear detection-related data
+        self.crossed_ids.clear()
+        self.detection_history.clear()
+        self.logged_lost_ids.clear()
+        self.plate_buffer.clear()
+        self.class_counts.clear()
+
+        print("🛑 Video processing stopped and buffers cleared.")

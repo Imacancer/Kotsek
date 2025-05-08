@@ -24,9 +24,11 @@ from db.db import init_db, db  # Import the init_db function and db instance
 
 load_dotenv()
 
-
+socketio = SocketIO(cors_allowed_origins="*", ping_timeout=1, ping_interval=2, max_http_buffer_size=1e8)
 def create_app():
+
     global entry_video_processor, exit_video_processor
+
     app = Flask(__name__)
     app.secret_key = os.getenv('SECRET_KEY', 'FB27D156173716A31912F1BD6CEDB')
 
@@ -53,29 +55,30 @@ def create_app():
     #     run_all_initializers()
 
     # Initialize SocketIO and any additional services
-    socketio = SocketIO(app, ping_timeout=1, ping_interval=2, 
-                        cors_allowed_origins="*", max_http_buffer_size=1e8)
-    cctv = "rtsp://admincctv:admincctv@192.168.0.134/stream1"
+    socketio.init_app(app)
+    cctv = "rtmp://host.docker.internal:1935/live/test"
 
     video_path_exit = "./sample/mamamo.mov"  # Update path as necessary
-    video_path_entry = "./sample/1 entry.mp4"
-    entry_video_processor = EntryVideoProcessor(socketio, video_path_exit) 
+    video_path_entry = "./sample/mamamo.mov"  # Update path as necessary
+    entry_video_processor = EntryVideoProcessor(socketio, video_path_entry) 
     exit_video_processor = VideoProcessor(socketio, video_path_exit)
     app.entry_video_processor = entry_video_processor
     app.exit_video_processor = exit_video_processor
 
-    # exit_video_path = "./sample/exit_video.mov"  # Update with your exit video path
-    # exit_detection = ExitDetection(socketio, exit_video_path)
-    # app.exit_detection = exit_detection
+    app.set_active_guard = lambda guard_id: (
+        app.entry_video_processor.set_active_guard(guard_id),
+        app.exit_video_processor.set_active_guard(guard_id)
+    )
 
-    app.set_active_guard = lambda guard_id: app.video_processor.set_active_guard(guard_id)
+
+
     
     # Add a property to get the active guard ID
     @property
     def active_guard_id(app):
-        return app.video_processor.active_guard_id
+        return app.entry_video_processor.active_guard_id
     
-    app.active_guard_id = property(lambda app: app.video_processor.active_guard_id)
+    app.active_guard_id = property(lambda app: app.entry_video_processor.active_guard_id)
 
 
     @socketio.on("start_entry_video")
@@ -98,6 +101,10 @@ def create_app():
         print("Received stop_exit_video event")
         exit_video_processor.stop()
 
+    @socketio.on_error_default  # handles all errors
+    def default_error_handler(e):
+        print("🔥SocketIO Error:", e)
+
     # @socketio.on("start_exit_video")
     # def handle_start_exit_video(data):
     #     print("Received start_exit_video event")
@@ -107,8 +114,20 @@ def create_app():
     # def handle_stop_exit_video(data=None):
     #     print("Received stop_exit_video event")
     #     exit_detection.stop()
+    @app.route("/")
+    def index():
+        return "Backend is alive!"
+    return app
 
-    return app, socketio
+
+# Create a global app variable for Flask CLI to pick up
+app = create_app()
+
+if __name__ == '__main__':
+
+    socketio.run(app, host="0.0.0.0", port=5001, debug=True)
+
+
 
 # def create_exit_app():
 #     app = Flask(__name__)
@@ -156,16 +175,3 @@ def create_app():
 #     return app, socketio
 
 
-# Create a global app variable for Flask CLI to pick up
-app, socketio = create_app()
-# exit_app, exit_socketio = create_exit_app()
-
-if __name__ == '__main__':
-    from threading import Thread
-    import eventlet
-    eventlet.monkey_patch()
-
-    # exit_thread = Thread(target=lambda: exit_socketio.run(exit_app, host='0.0.0.0', port=5002, use_reloader=False, log_output=True))
-    # exit_thread.daemon = True
-    # exit_thread.start()
-    socketio.run(app, debug=True, host='0.0.0.0', port=5001, use_reloader=False, log_output=True)

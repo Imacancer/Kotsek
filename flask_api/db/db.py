@@ -14,7 +14,7 @@ def init_db(app):
 
     # Optional: Set engine options for connection pooling in production
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        'pool_size': 10,
+        'pool_size': 15,
         'pool_recycle': 300,
         'pool_pre_ping': True
     }

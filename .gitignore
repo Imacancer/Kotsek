@@ -5,7 +5,6 @@ node_modules/
 runs/
 .env
 .vscode
-*.mp4
 datasets/
 README.md
 dump.txt
@@ -13,5 +12,6 @@ backend/
 .next/
 detect.py
 train.py
-
+*.mp4
 anti.py
+flask_api/Dockerfile
