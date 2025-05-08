@@ -56,8 +56,8 @@ def create_app():
 
     video_path_exit = "./sample/2exitnew.mp4"  # Update path as necessary
     video_path_entry = "./sample/1entrynew.mp4"
-    entry_video_processor = EntryVideoProcessor(socketio, video_path_entry) 
-    exit_video_processor = VideoProcessor(socketio, video_path_exit)
+    entry_video_processor = EntryVideoProcessor(socketio, cctv) 
+    exit_video_processor = VideoProcessor(socketio, cctv)
     app.entry_video_processor = entry_video_processor
     app.exit_video_processor = exit_video_processor
 
