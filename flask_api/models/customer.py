@@ -14,6 +14,9 @@ class ParkingCustomer(db.Model):
     is_registered = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    address = db.Column(db.String(255))
+    email = db.Column(db.String(100), unique=True, nullable=True)
+    car_model = db.Column(db.String(100))
     
     entries = db.relationship('VehicleEntry', backref='customer', lazy=True, foreign_keys='VehicleEntry.customer_id')
     exits = db.relationship('VehicleExit', backref='customer', lazy=True, foreign_keys='VehicleExit.customer_id')

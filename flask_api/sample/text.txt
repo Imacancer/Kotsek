@@ -1,0 +1,7 @@
+Name(first , last)
+Plate
+Vehicle type(car motor bike)
+Contact
+Address
+Email
+Car model

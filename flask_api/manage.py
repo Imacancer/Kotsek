@@ -9,6 +9,7 @@ from controllers.unassigned import vehicle_bp
 from controllers.assign_guard import guard_bp
 from controllers.parking_lot import parking_bp
 from controllers.tungtungtungsahur import analytics_bp
+from controllers.customer_mgmt import customer_bp
 
 import os 
 from dotenv import load_dotenv
@@ -45,6 +46,7 @@ def create_app():
     app.register_blueprint(guard_bp)
     app.register_blueprint(parking_bp)
     app.register_blueprint(analytics_bp, url_prefix='/analytics')
+    app.register_blueprint(customer_bp)
 
     init_jwt(app)
 

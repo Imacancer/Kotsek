@@ -97,8 +97,8 @@ interface SpecialtyVehicleSlot {
   status: "available" | "occupied" | "reserved";
   current_vehicle_id?: string;
   plate_number?: string;
-  section: string;     // ✅ Add this
-  lot_id: string; 
+  section: string; // ✅ Add this
+  lot_id: string;
 }
 interface UnassignedVehicle {
   id: string;
@@ -208,7 +208,24 @@ const SurveillanceInterface = () => {
         setSelectedGuard(response.data.active_guard.id);
       }
     } catch (error) {
-      console.error("Error fetching active guard:", error);
+      if (axios.isAxiosError(error)) {
+        if (error.response?.status === 404) {
+          // This is the expected "no active guard" case, handle silently
+          console.log("No active guard found - this is normal");
+        } else {
+          // This is an unexpected error, log it
+          console.error(
+            "Error fetching active guard:",
+            error.response?.data || error.message
+          );
+        }
+      } else {
+        // Handle non-Axios errors
+        console.error(
+          "Unexpected error fetching active guard:",
+          error instanceof Error ? error.message : String(error)
+        );
+      }
     }
   };
 
@@ -245,13 +262,10 @@ const SurveillanceInterface = () => {
       const response = await axios.get(
         `${SERVER_URL}/parking/get-parking-status`
       );
-      
 
       if (response.data && response.data.success) {
         const data = response.data.data;
         const slots = data?.slots || {};
-
-        
 
         // Handle car slots as before (unchanged)
         setParkingDataLeft(
@@ -326,7 +340,7 @@ const SurveillanceInterface = () => {
             current_vehicle_id: slot.current_vehicle_id,
             plate_number: slot.plate_number,
             section: "elevated parking",
-            lot_id: "Elevated_MCP"
+            lot_id: "Elevated_MCP",
           }))
         );
 
@@ -342,20 +356,31 @@ const SurveillanceInterface = () => {
           section: slot.section || "", // ✅ REQUIRED for splitting
           vehicle_type: "bicycle",
         }));
-        console.log("🧠 Raw bicycle slot objects:", bicycles.map((b: ParkingSlot) => ({ id: b.id, section: b.section })));
+        console.log(
+          "🧠 Raw bicycle slot objects:",
+          bicycles.map((b: ParkingSlot) => ({ id: b.id, section: b.section }))
+        );
         console.log("🧠 Sample slot object:", bicycles[0]);
 
         setBicycleData(bicycles);
 
         const totalBikes = bicycles.length;
-        const leftBikes   = bicycles.filter((s: ParkingSlot) =>
-          s.section?.trim().toLowerCase() === "bike area left"
+        const leftBikes = bicycles.filter(
+          (s: ParkingSlot) =>
+            s.section?.trim().toLowerCase() === "bike area left"
         );
-        const rightBikes = bicycles.filter((s: ParkingSlot) =>
-          s.section?.trim().toLowerCase() === "bike area right"
+        const rightBikes = bicycles.filter(
+          (s: ParkingSlot) =>
+            s.section?.trim().toLowerCase() === "bike area right"
         );
-        console.log("⬅️ Bike Area Left:", leftBikes.map((b: ParkingSlot) => b.id));
-        console.log("➡️ Bike Area Right:", rightBikes.map((b: ParkingSlot) => b.id));
+        console.log(
+          "⬅️ Bike Area Left:",
+          leftBikes.map((b: ParkingSlot) => b.id)
+        );
+        console.log(
+          "➡️ Bike Area Right:",
+          rightBikes.map((b: ParkingSlot) => b.id)
+        );
         console.log("🚲 Total bicycles fetched:", bicycles);
         console.log("⬅️ Bike Area Left:", leftBikes);
         console.log("➡️ Bike Area Right:", rightBikes);
@@ -367,7 +392,7 @@ const SurveillanceInterface = () => {
             current_vehicle_id: slot.current_vehicle_id,
             plate_number: slot.plate_number,
             section: "bike area left", // or right
-            lot_id: slot.lot_id ?? "PE1_Bike"
+            lot_id: slot.lot_id ?? "PE1_Bike",
           }))
         );
 
@@ -379,7 +404,7 @@ const SurveillanceInterface = () => {
             current_vehicle_id: slot.current_vehicle_id,
             plate_number: slot.plate_number,
             section: "bike area right", // or right
-            lot_id: slot.lot_id ?? "PE2_Bike"
+            lot_id: slot.lot_id ?? "PE2_Bike",
           }))
         );
       }
@@ -541,11 +566,7 @@ const SurveillanceInterface = () => {
         slot_section: selectedSlot.section,
         entry_id: selectedVehicle,
         lot_id: lotNumber,
-<<<<<<< HEAD
-        vehicle_type: selectedVehicleType || undefined, // Add vehicle type for motorcycle/bicycle
-=======
         vehicle_type: selectedVehicleType,
->>>>>>> f30f821483dc7712a59e7f6e01cfc8a8df6dcc3e
       });
       console.log("Selected Slot ID:", selectedSlot.slot_number);
       if (response.data && response.data.success) {
@@ -571,15 +592,18 @@ const SurveillanceInterface = () => {
     }
   };
 
-
-  const assignSpecialtySlot = async (slotNumber: number, section: string, lotId: string) => {
+  const assignSpecialtySlot = async (
+    slotNumber: number,
+    section: string,
+    lotId: string
+  ) => {
     if (!selectedVehicle) {
       toast.error("Please select a vehicle to assign");
       return;
     }
-  
+
     console.log("Assigning slot:", { slotNumber, section, lotId });
-  
+
     try {
       const response = await axios.post(`${SERVER_URL}/parking/assign-slot`, {
         slot_id: slotNumber.toString(),
@@ -588,7 +612,7 @@ const SurveillanceInterface = () => {
         lot_id: lotId,
         vehicle_type: selectedVehicleType,
       });
-  
+
       if (response.data?.success) {
         toast.success(response.data.message);
         setShowBicycleDialog(false);
@@ -603,13 +627,14 @@ const SurveillanceInterface = () => {
       toast.error("An error occurred while assigning slot");
     }
   };
-  
 
-
-
-  const handleAssignSlot = (slot_number: number, section: string, lot_id: string) => {
+  const handleAssignSlot = (
+    slot_number: number,
+    section: string,
+    lot_id: string
+  ) => {
     assignSpecialtySlot(slot_number, section, lot_id); // Call your existing function
-  };  
+  };
 
   const releaseSpecialtySlot = async (slotId: string) => {
     try {
@@ -1064,7 +1089,7 @@ const SurveillanceInterface = () => {
               colorAnnotation: mostConfidentDetection?.color_annotation,
               ocrText:
                 mostConfidentDetection.plates
-                  .map((plate) => plate.ocr_text)
+                  ?.map((plate) => plate.ocr_text)
                   .join(", ") || "",
               annotationLabel: parseInt(mostConfidentDetection.label),
             });
@@ -1279,7 +1304,7 @@ const SurveillanceInterface = () => {
                             mostConfidentDetection?.color_annotation,
                           ocrText:
                             mostConfidentDetection.plates
-                              .map((plate) => plate.ocr_text)
+                              ?.map((plate) => plate.ocr_text)
                               .join(", ") || "",
                           annotationLabel: parseInt(
                             mostConfidentDetection.label
@@ -1451,19 +1476,19 @@ const SurveillanceInterface = () => {
                     if (section === "bike area left") {
                       fetchParkingData();
                       setBikeLeftData(
-                        (slots || []).map(slot => ({
+                        (slots || []).map((slot) => ({
                           ...slot,
                           section: "bike area left",
-                          lot_id: slot.lot_id ?? "PE1_Bike"
+                          lot_id: slot.lot_id ?? "PE1_Bike",
                         }))
                       );
                     } else {
                       fetchParkingData();
                       setBikeRightData(
-                        (slots || []).map(slot => ({
+                        (slots || []).map((slot) => ({
                           ...slot,
                           section: "bike area right",
-                          lot_id: slot.lot_id ?? "PE2_Bike"
+                          lot_id: slot.lot_id ?? "PE2_Bike",
                         }))
                       );
                     }
@@ -1473,13 +1498,12 @@ const SurveillanceInterface = () => {
                     setSelectedVehicleType("motorcycle");
                     // Update motor lot data
                     setMotorLotData(
-                      (slots || []).map(slot => ({
+                      (slots || []).map((slot) => ({
                         ...slot,
                         section: "elevated parking",
-                        lot_id: slot.lot_id ?? "Elevated_MCP"
+                        lot_id: slot.lot_id ?? "Elevated_MCP",
                       }))
                     );
-                    
                   } else {
                     // For car slots, set selected slot and show dialog
                     setSelectedSlot({

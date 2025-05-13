@@ -25,7 +25,10 @@ import { Loader2 } from "lucide-react";
 const API_URL = process.env.NEXT_PUBLIC_SERVER_URL;
 
 interface TrafficDataEntry {
-  time: string;
+  date?: string;
+  day?: string;
+  display_date?: string;
+  time?: string;
   entries: number;
   exits: number;
   total: number;
@@ -38,7 +41,7 @@ interface VehicleTypeCounts {
 }
 
 const TrafficChart = () => {
-  const [selectedView, setSelectedView] = useState("day");
+  const [selectedView, setSelectedView] = useState("week");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [trafficData, setTrafficData] = useState<TrafficDataEntry[] | null>(
@@ -51,6 +54,10 @@ const TrafficChart = () => {
       bicycle: 0,
     }
   );
+  const [dateRange, setDateRange] = useState<{
+    start_date: string;
+    end_date: string;
+  } | null>(null);
 
   useEffect(() => {
     fetchTrafficData();
@@ -59,14 +66,16 @@ const TrafficChart = () => {
   const fetchTrafficData = async () => {
     try {
       setLoading(true);
-      const response = await axios.get(
-        `${API_URL}/analytics/traffic/${selectedView}`
-      );
-      const data = response.data;
-
       let formattedData: TrafficDataEntry[] = [];
+      let response;
 
       if (selectedView === "day") {
+        // Daily view - hourly data
+        response = await axios.get(
+          `${API_URL}/analytics/traffic/${selectedView}`
+        );
+        const data = response.data;
+
         for (let hour = 0; hour < 24; hour++) {
           const entryCount = data.hourly_distribution.entries[hour] || 0;
           const exitCount = data.hourly_distribution.exits[hour] || 0;
@@ -78,33 +87,43 @@ const TrafficChart = () => {
             total: entryCount + exitCount,
           });
         }
+
+        setVehicleTypeCounts({
+          car: data.entries_by_type.car || 0,
+          motorcycle: data.entries_by_type.motorcycle || 0,
+          bicycle: data.entries_by_type.bicycle || 0,
+        });
       } else if (selectedView === "week") {
-        const weeklyResponse = await axios.get(
-          `${API_URL}/analytics/traffic/weekly-pattern`
-        );
-        const weeklyData = weeklyResponse.data;
-        const days = [
-          "Monday",
-          "Tuesday",
-          "Wednesday",
-          "Thursday",
-          "Friday",
-          "Saturday",
-          "Sunday",
-        ];
+        // Weekly view - current week data by day
+        response = await axios.get(`${API_URL}/analytics/traffic/current-week`);
+        const data = response.data;
 
-        formattedData = days.map((day) => {
-          const entries = weeklyData.entries_by_day[day] || 0;
-          const exits = weeklyData.exits_by_day[day] || 0;
+        // Set date range
+        setDateRange(data.date_range);
 
-          return {
-            time: day,
-            entries: entries,
-            exits: exits,
-            total: entries + exits,
-          };
+        // Use the traffic data from the response
+        formattedData = data.traffic_data.map((day: any) => ({
+          time: `${day.day} (${day.display_date})`,
+          day: day.day,
+          display_date: day.display_date,
+          entries: day.entries,
+          exits: day.exits,
+          total: day.total,
+        }));
+
+        // Set vehicle type counts
+        setVehicleTypeCounts({
+          car: data.entries_by_type.car || 0,
+          motorcycle: data.entries_by_type.motorcycle || 0,
+          bicycle: data.entries_by_type.bicycle || 0,
         });
       } else if (selectedView === "month") {
+        // Monthly view - weekly data
+        response = await axios.get(
+          `${API_URL}/analytics/traffic/${selectedView}`
+        );
+        const data = response.data;
+
         const now = new Date();
         const currentMonth = now.getMonth();
         const currentYear = now.getFullYear();
@@ -143,14 +162,15 @@ const TrafficChart = () => {
               Math.round(baseExits * multiplier),
           };
         });
+
+        setVehicleTypeCounts({
+          car: data.entries_by_type.car || 0,
+          motorcycle: data.entries_by_type.motorcycle || 0,
+          bicycle: data.entries_by_type.bicycle || 0,
+        });
       }
 
       setTrafficData(formattedData);
-      setVehicleTypeCounts({
-        car: data.entries_by_type.car || 0,
-        motorcycle: data.entries_by_type.motorcycle || 0,
-        bicycle: data.entries_by_type.bicycle || 0,
-      });
       setLoading(false);
     } catch (err) {
       console.error("Error fetching traffic data:", err);
@@ -159,9 +179,19 @@ const TrafficChart = () => {
     }
   };
 
+  const getDateRangeText = () => {
+    if (!dateRange) return "";
+    return `${dateRange.start_date} to ${dateRange.end_date}`;
+  };
+
   return (
     <div className="space-y-6">
-      <div className="flex justify-end">
+      <div className="flex justify-between items-center">
+        <div className="text-sm text-gray-500">
+          {selectedView === "week" && dateRange && (
+            <span>Week of {getDateRangeText()}</span>
+          )}
+        </div>
         <Select
           value={selectedView}
           onValueChange={(value) => setSelectedView(value)}
