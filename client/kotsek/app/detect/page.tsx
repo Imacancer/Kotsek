@@ -56,10 +56,15 @@ interface Detection {
 }
 
 interface User {
-  id: number;
+  id: string; // Should be string to match backend UUID
   email: string;
-  username: string;
-  profile_image: string | null;
+  username?: string; // Keep if applicable
+  profile_image: string | null; // Keep if applicable
+  first_name?: string; // Optional, based on ParkingCustomer model
+  last_name?: string; // Optional, based on ParkingCustomer model
+  plate_number?: string; // Added: Include plate number from backend
+  display_name_with_plate?: string; // Added: The formatted string for dropdown
+  // Add any other properties your backend returns for a registered customer
 }
 
 interface EntryDetectionData {
@@ -90,6 +95,10 @@ interface SelectedSlot {
   lot_id?: string;
   status?: string;
   current_vehicle_id?: string;
+  reserved_for?: string; // UUID of customer if reserved
+  // Added fields to store reserved customer details for display
+  reserved_customer_name?: string;
+  reserved_plate_number?: string;
 }
 interface SpecialtyVehicleSlot {
   id: string;
@@ -99,6 +108,9 @@ interface SpecialtyVehicleSlot {
   plate_number?: string;
   section: string; // ✅ Add this
   lot_id: string;
+  reserved_for?: string;
+  reserved_customer_name?: string;
+  reserved_plate_number?: string;
 }
 interface UnassignedVehicle {
   id: string;
@@ -108,6 +120,12 @@ interface UnassignedVehicle {
   entry_time: string;
   exit_time: string | null;
 }
+const getCustomerDisplayName = (customer: User): string => {
+  if (customer.first_name || customer.last_name) {
+    return `${customer.first_name || ""} ${customer.last_name || ""}`.trim();
+  }
+  return customer.username || customer.email || customer.id; // Fallback display
+};
 const SurveillanceInterface = () => {
   const entryVideoRef = useRef<HTMLImageElement | null>(null);
   const exitVideoRef = useRef<HTMLImageElement | null>(null);
@@ -189,7 +207,14 @@ const SurveillanceInterface = () => {
       ocrText: "",
       annotationLabel: 0,
     });
-
+  // Add these new state variables for reservation
+  const [registeredCustomers, setRegisteredCustomers] = useState<User[]>(
+    [] as User[]
+  );
+  const [selectedCustomer, setSelectedCustomer] = useState<string | null>(
+    null as string | null
+  );
+  // To store the ID (UUID) of the selected customer
   const fetchGuards = async () => {
     try {
       const response = await axios.get(`${SERVER_URL}/guard/guards`);
@@ -199,7 +224,27 @@ const SurveillanceInterface = () => {
       toast.error("Failed to load guards");
     }
   };
-
+  const fetchRegisteredCustomers = async () => {
+    try {
+      // Replace with your actual API endpoint for fetching registered users/customers
+      // Assuming your backend has a /customer/registered-customers endpoint
+      const response = await axios.get(
+        `${SERVER_URL}/customer/registered-customers`
+      );
+      if (response.data?.success) {
+        setRegisteredCustomers(response.data.data);
+      } else {
+        console.error(
+          "Failed to fetch registered customers:",
+          response.data?.message
+        );
+        toast.error("Failed to load registered customers");
+      }
+    } catch (error) {
+      console.error("Error fetching registered customers:", error);
+      toast.error("Failed to load registered customers");
+    }
+  };
   const getActiveGuard = async () => {
     try {
       const response = await axios.get(`${SERVER_URL}/guard/active-guard`);
@@ -255,6 +300,7 @@ const SurveillanceInterface = () => {
   useEffect(() => {
     fetchGuards();
     getActiveGuard();
+    fetchRegisteredCustomers();
   }, [SERVER_URL]);
 
   const fetchParkingData = async () => {
@@ -262,6 +308,8 @@ const SurveillanceInterface = () => {
       const response = await axios.get(
         `${SERVER_URL}/parking/get-parking-status`
       );
+
+      console.log("[fetchParkingData] Raw API Response Data:", response.data);
 
       if (response.data && response.data.success) {
         const data = response.data.data;
@@ -277,6 +325,9 @@ const SurveillanceInterface = () => {
             plate_number:
               slot.status === "available" ? undefined : slot.plate_number,
             current_vehicle_id: slot.current_vehicle_id || undefined,
+            reserved_plate_number: slot.reserved_plate_number,
+            reserved_for: slot.reserved_for,
+            reserved_customer_name: slot.reserved_customer_name,
           }))
         );
 
@@ -289,6 +340,9 @@ const SurveillanceInterface = () => {
             plate_number:
               slot.status === "available" ? undefined : slot.plate_number,
             current_vehicle_id: slot.current_vehicle_id || undefined,
+            reserved_plate_number: slot.reserved_plate_number,
+            reserved_for: slot.reserved_for,
+            reserved_customer_name: slot.reserved_customer_name,
           }))
         );
 
@@ -301,6 +355,7 @@ const SurveillanceInterface = () => {
             plate_number:
               slot.status === "available" ? undefined : slot.plate_number,
             current_vehicle_id: slot.current_vehicle_id || undefined,
+            reserved_plate_number: slot.reserved_plate_number,
           }))
         );
 
@@ -313,6 +368,9 @@ const SurveillanceInterface = () => {
             plate_number:
               slot.status === "available" ? undefined : slot.plate_number,
             current_vehicle_id: slot.current_vehicle_id || undefined,
+            reserved_plate_number: slot.reserved_plate_number,
+            reserved_for: slot.reserved_for,
+            reserved_customer_name: slot.reserved_customer_name,
           }))
         );
 
@@ -470,6 +528,8 @@ const SurveillanceInterface = () => {
 
   // Handle slot click
   // Update the handleSlotClick function
+  // Handle slot click
+  // Handle slot click
   const handleSlotClick = useCallback(
     (
       id: string,
@@ -478,9 +538,54 @@ const SurveillanceInterface = () => {
       lot_id?: string,
       status?: string,
       current_vehicle_id?: string,
-      slots?: ParkingSlot[] // Add slots parameter
+      slot?: ParkingSlot[],
+      reserved_for?: string,
+      reserved_customer_name?: string,
+      reserved_plate_number?: string
+
+      // The ParkingSlotsComponent should now ideally pass the full slot object
+      // including reserved_for, reserved_customer_name, reserved_plate_number from the backend response.
+      // We will still find the full slot data from our state arrays as a fallback/confirmation.
     ) => {
-      // Handle specialty vehicle sections
+      // ADD THIS CONSOLE LOG AS THE FIRST LINE
+      console.log("[handleSlotClick] Received click parameters:", {
+        id,
+        slot_number,
+        section,
+        lot_id,
+        status,
+        current_vehicle_id,
+        reserved_for,
+        reserved_customer_name,
+        reserved_plate_number,
+      });
+
+      const slotStatus = status || "available";
+
+      // Find the full slot data from the state arrays. This data should now include
+      // reserved_for, reserved_customer_name, and reserved_plate_number if available.
+      // const foundSlot = [...parkingDataLeft, ...parkingDataRight, ...parkingDataCenter, ...parkingDataTop, ...bikeLeftData, ...bikeRightData, ...motorLotData]
+      //                     .find(s => s.id === id);
+
+      // Populate the selected slot data directly from the found slot
+      const slotData: SelectedSlot = {
+        id: id, // Use found id if available, fallback to passed id
+        slot_number: slot_number, // Use found number if available
+        section: section, // Use found section if available
+        lot_id: lot_id, // Use found lot_id if available
+        status: slotStatus, // Use found status if available
+        current_vehicle_id: current_vehicle_id, // Use found vehicle_id if available
+        reserved_for: reserved_for, // Get reserved_for directly from the found slot
+        reserved_customer_name: reserved_customer_name, // Get reserved name directly
+        reserved_plate_number: reserved_plate_number, // Get reserved plate directly
+      };
+
+      // Set the selected slot state BEFORE showing any dialog
+      setSelectedSlot(slotData);
+
+      console.log("[handleSlotClick] Populated selectedSlot:", slotData);
+
+      // --- Handle specialty vehicle sections ---
       if (
         section === "bike area left" ||
         section === "bike area right" ||
@@ -491,40 +596,51 @@ const SurveillanceInterface = () => {
         if (section === "bike area left" || section === "bike area right") {
           setShowBicycleDialog(true);
           setSelectedVehicleType("bicycle");
+          // Refresh data when opening specialty dialogs to ensure they have latest state
+          fetchParkingData();
+          fetchUnassignedVehicles();
+          fetchRegisteredCustomers();
         } else if (section === "elevated parking") {
           setShowMotorcycleDialog(true);
           setSelectedVehicleType("motorcycle");
-        } else {
-          setIsSlotDialogOpen(true);
+          // Refresh data when opening specialty dialogs
+          fetchParkingData();
+          fetchUnassignedVehicles();
+          fetchRegisteredCustomers();
         }
 
-        // Reset selected vehicle when opening specialty dialog
+        // Reset selected vehicle and customer when opening any specialty dialog
         setSelectedVehicle(null);
-        return;
+        setSelectedCustomer(null);
+        return; // Exit the function after handling specialty sections
       }
+      // --- End specialty vehicle handling ---
 
-      // Handle regular parking slots
-      const slotData = {
-        id,
-        slot_number,
-        section,
-        lot_id,
-        status: status || "available",
-        current_vehicle_id,
-      };
-
-      console.log("Selected Slot Data:", slotData);
-      console.log("Selected Slot JSON:", JSON.stringify(slotData, null, 2));
-
-      setSelectedSlot(slotData);
+      // --- Handle regular parking slots (car) ---
+      // If it's not a specialty section, open the main slot dialog
       setIsSlotDialogOpen(true);
 
       // Only reset selected vehicle if we're going to assign a new one
-      if (status === "available" || !current_vehicle_id) {
+      if (slotData.status === "available" || !slotData.current_vehicle_id) {
         setSelectedVehicle(null);
       }
+      // Always reset selected customer when opening the dialog for a car slot
+      setSelectedCustomer(null);
     },
-    []
+    // Add all state variables and functions that are accessed inside useCallback as dependencies
+    [
+      parkingDataLeft,
+      parkingDataRight,
+      parkingDataCenter,
+      parkingDataTop,
+      bikeLeftData,
+      bikeRightData,
+      motorLotData,
+      registeredCustomers,
+      fetchParkingData,
+      fetchUnassignedVehicles,
+      fetchRegisteredCustomers,
+    ]
   );
 
   // Update the assignParkingSlot function to handle different section types
@@ -588,6 +704,127 @@ const SurveillanceInterface = () => {
       } else {
         // Handle unknown error types
         toast.error("An unexpected error occurred");
+      }
+    }
+  };
+
+  // Create a function to handle the reservation logic
+  const reserveParkingSlot = async () => {
+    if (!selectedSlot) {
+      toast.error("Invalid slot selected");
+      return;
+    }
+
+    // Determine the lot number based on section and ID
+    let lotNumber = selectedSlot.lot_id || "";
+    if (!lotNumber) {
+      if (selectedSlot.section === "bike area left") {
+        lotNumber = "PE1_Bike";
+      } else if (selectedSlot.section === "bike arearight") {
+        // Note: "bike arearight" might be a typo, check backend
+        lotNumber = "PE2_Bike";
+      } else if (selectedSlot.section === "elevated parking") {
+        lotNumber = "Elevated_MCP";
+      } else if (selectedSlot.section === "top") {
+        lotNumber = `PE2_Top`; // Assuming lot_id structure
+      } else if (selectedSlot.section === "left") {
+        lotNumber = `PE1_Left`; // Assuming lot_id structure
+      } else if (selectedSlot.section === "right") {
+        lotNumber = `BLDG1_Right`; // Assuming lot_id structure
+      } else if (selectedSlot.section === "center-upper") {
+        lotNumber = `CENTER1_Upper`; // Assuming lot_id structure
+      } else if (selectedSlot.section === "center-lower") {
+        lotNumber = `CENTER2_Lower`; // Assuming lot_id structure
+      } else {
+        // Fallback or handle other sections
+        lotNumber = `UNKNOWN_LOT_${selectedSlot.section}`;
+      }
+    }
+
+    // Determine the API endpoint and data based on whether a customer is selected
+    const isCancellingReservation = selectedCustomer === ""; // Check if "None" is selected
+    const apiEndpoint = isCancellingReservation
+      ? `${SERVER_URL}/parking/release-slot`
+      : `${SERVER_URL}/parking/reserve-slot`;
+    const requestData: any = {
+      slot_number: selectedSlot.slot_number.toString(), // Sending slot_number as slot_id
+      slot_section: selectedSlot.section,
+      lot_id: lotNumber, // Pass the determined lotNumber
+    };
+
+    if (isCancellingReservation) {
+      // For releasing a reservation, send slot identifier
+      requestData.id = selectedSlot.id; // Send the slot UUID for release
+      // The backend release endpoint doesn't need customer_id or entry_id
+    } else {
+      // For reserving or changing reservation, send customer_id
+      if (!selectedCustomer) {
+        // Should be caught by initial check, but safety first
+        toast.error("Please select a customer to reserve the slot.");
+        return;
+      }
+      requestData.customer_id = selectedCustomer; // Sending the selected customer's UUID
+    }
+
+    try {
+      console.log(
+        `Attempting to ${
+          isCancellingReservation ? "release reservation for" : "reserve"
+        } slot:`,
+        requestData
+      );
+
+      const response = await axios.post(apiEndpoint, requestData);
+      console.log(`[reserveParkingSlot] Sending request to: ${apiEndpoint}`);
+      console.log("[reserveParkingSlot] Request data:", requestData);
+
+      if (response.data?.success) {
+        toast.success(
+          response.data.message ||
+            `Slot ${
+              isCancellingReservation ? "made available" : "reserved"
+            } successfully!`
+        );
+        setIsSlotDialogOpen(false);
+        setSelectedCustomer(null); // Clear selected customer
+
+        // Refresh parking data to show the slot as reserved or available
+        fetchParkingData();
+        // Optionally refresh customer/unassigned lists if reservation affects them
+        fetchRegisteredCustomers();
+        fetchUnassignedVehicles();
+      } else {
+        toast.error(
+          response.data?.message ||
+            `Failed to ${
+              isCancellingReservation ? "make slot available" : "reserve slot"
+            }`
+        );
+      }
+    } catch (error) {
+      console.error(
+        `Error during ${
+          isCancellingReservation ? "reservation release" : "reservation"
+        }:`,
+        error
+      );
+      if (axios.isAxiosError(error)) {
+        console.error("API Error Response:", {
+          status: error.response?.status,
+          data: error.response?.data,
+        });
+        toast.error(
+          error.response?.data?.message ||
+            `An API error occurred during ${
+              isCancellingReservation ? "reservation release" : "reservation"
+            }.`
+        );
+      } else {
+        toast.error(
+          `An unexpected error occurred during ${
+            isCancellingReservation ? "reservation release" : "reservation"
+          }.`
+        );
       }
     }
   };
@@ -773,6 +1010,7 @@ const SurveillanceInterface = () => {
   useEffect(() => {
     fetchParkingData();
     fetchUnassignedVehicles();
+    fetchRegisteredCustomers();
 
     // Set up polling for real-time updates
     const interval = setInterval(() => {
@@ -784,10 +1022,10 @@ const SurveillanceInterface = () => {
   }, [SERVER_URL]);
 
   const allParkingSlots = [
-    ...parkingDataLeft,
-    ...parkingDataRight,
-    ...parkingDataCenter,
-    ...parkingDataTop,
+    ...(parkingDataLeft || []),
+    ...(parkingDataRight || []),
+    ...(parkingDataCenter || []),
+    ...(parkingDataTop || []),
   ];
   const totalSpaces = allParkingSlots.length;
   const occupiedSpaces = allParkingSlots.filter(
@@ -1453,73 +1691,7 @@ const SurveillanceInterface = () => {
                 vacantSpaces={vacantSpaces}
                 reservedSpaces={reservedSpaces}
                 capacityStatus={capacityStatus}
-                onSlotClick={(
-                  id,
-                  number,
-                  section,
-                  lotId,
-                  status,
-                  vehicleId,
-                  slots
-                ) => {
-                  // First set the current section
-                  setCurrentSpecialtySection(section);
-
-                  if (
-                    section === "bike area left" ||
-                    section === "bike area right"
-                  ) {
-                    // For bike areas, show bicycle dialog
-                    setShowBicycleDialog(true);
-                    setSelectedVehicleType("bicycle");
-                    // Update the bike data based on section
-                    if (section === "bike area left") {
-                      fetchParkingData();
-                      setBikeLeftData(
-                        (slots || []).map((slot) => ({
-                          ...slot,
-                          section: "bike area left",
-                          lot_id: slot.lot_id ?? "PE1_Bike",
-                        }))
-                      );
-                    } else {
-                      fetchParkingData();
-                      setBikeRightData(
-                        (slots || []).map((slot) => ({
-                          ...slot,
-                          section: "bike area right",
-                          lot_id: slot.lot_id ?? "PE2_Bike",
-                        }))
-                      );
-                    }
-                  } else if (section === "elevated parking") {
-                    // For motor area, show motorcycle dialog
-                    setShowMotorcycleDialog(true);
-                    setSelectedVehicleType("motorcycle");
-                    // Update motor lot data
-                    setMotorLotData(
-                      (slots || []).map((slot) => ({
-                        ...slot,
-                        section: "elevated parking",
-                        lot_id: slot.lot_id ?? "Elevated_MCP",
-                      }))
-                    );
-                  } else {
-                    // For car slots, set selected slot and show dialog
-                    setSelectedSlot({
-                      id,
-                      slot_number: number,
-                      section,
-                      lot_id: lotId,
-                      status: status || "available",
-                      current_vehicle_id: vehicleId,
-                    });
-                    setIsSlotDialogOpen(true);
-                  }
-
-                  // Reset selected vehicle when opening any dialog
-                  setSelectedVehicle(null);
-                }}
+                onSlotClick={handleSlotClick}
               />
             </div>
           </CardContent>
@@ -1578,11 +1750,134 @@ const SurveillanceInterface = () => {
 
             {selectedSlot && (
               <div className="space-y-4 py-4">
-                {/* Check if the slot is occupied (has status "occupied" or has current_vehicle_id) */}
-                {selectedSlot.status === "occupied" ||
-                selectedSlot.current_vehicle_id ? (
-                  // Show release option for occupied slots
+                {/* Display reserved info if status is reserved */}
+                {selectedSlot.status === "reserved" &&
+                selectedSlot.reserved_customer_name &&
+                selectedSlot.reserved_plate_number ? (
                   <>
+                    {console.log("Inside RESERVED block:", {
+                      status: selectedSlot.status,
+                      reserved_customer_name:
+                        selectedSlot.reserved_customer_name,
+                      reserved_plate_number: selectedSlot.reserved_plate_number,
+                    })}
+                    <p className="text-lg font-medium text-green-700">
+                      This slot is reserved for:
+                    </p>
+                    <p className="text-xl font-bold">
+                      {selectedSlot.reserved_customer_name}:{" "}
+                      {selectedSlot.reserved_plate_number}
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      Only a vehicle with this plate number can be assigned
+                      here.
+                    </p>
+                    <Tabs defaultValue="assign">
+                      {" "}
+                      {/* Still show tabs, but filter assign */}
+                      <TabsList className="grid w-full grid-cols-2">
+                        <TabsTrigger value="assign">
+                          Assign Reserved Vehicle
+                        </TabsTrigger>{" "}
+                        {/* Updated text */}
+                        <TabsTrigger value="reserve">
+                          Change Reservation
+                        </TabsTrigger>{" "}
+                        {/* Updated text */}
+                      </TabsList>
+                      <TabsContent value="assign" className="space-y-4">
+                        <div className="space-y-2">
+                          <h3 className="text-sm font-medium">
+                            Select Reserved Vehicle Entry
+                          </h3>
+                          {/* Filter unassigned vehicles to only show the reserved one */}
+                          <select
+                            className="w-full p-2 border rounded"
+                            value={selectedVehicle || ""}
+                            onChange={(e) => setSelectedVehicle(e.target.value)}
+                          >
+                            <option value="">
+                              Select the reserved vehicle
+                            </option>
+                            {unassignedVehicles
+                              .filter(
+                                (vehicle) =>
+                                  vehicle.plate ===
+                                  selectedSlot.reserved_plate_number
+                              )
+                              .map((vehicle) => (
+                                <option key={vehicle.id} value={vehicle.id}>
+                                  {vehicle.plate} - {vehicle.type}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                        <DialogFooter>
+                          <Button
+                            variant="outline"
+                            onClick={() => setIsSlotDialogOpen(false)}
+                          >
+                            Cancel
+                          </Button>
+                          {/* Only enable assign if the correct vehicle is selected */}
+                          <Button
+                            onClick={assignParkingSlot}
+                            disabled={!selectedVehicle}
+                          >
+                            Assign Reserved Vehicle
+                          </Button>
+                        </DialogFooter>
+                      </TabsContent>
+                      {/* Reserve tab content for changing or cancelling reservation */}
+                      <TabsContent value="reserve" className="space-y-4">
+                        <div className="space-y-2">
+                          <h3 className="text-sm font-medium">
+                            Select New Customer or None
+                          </h3>
+                          <select
+                            className="w-full p-2 border rounded"
+                            value={selectedCustomer || ""}
+                            onChange={(e) =>
+                              setSelectedCustomer(e.target.value)
+                            }
+                          >
+                            <option value="">None (Make Available)</option>{" "}
+                            {/* Option to make available */}
+                            {registeredCustomers.map((customer) => (
+                              <option key={customer.id} value={customer.id}>
+                                {customer.display_name_with_plate ||
+                                  getCustomerDisplayName(customer)}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <DialogFooter>
+                          <Button
+                            variant="outline"
+                            onClick={() => setIsSlotDialogOpen(false)}
+                          >
+                            Cancel
+                          </Button>
+                          {/* Button text changes based on selection */}
+                          <Button onClick={reserveParkingSlot}>
+                            {selectedCustomer
+                              ? "Change Reservation"
+                              : "Make /Available"}
+                          </Button>
+                        </DialogFooter>
+                      </TabsContent>
+                    </Tabs>
+                  </>
+                ) : selectedSlot.status === "occupied" ||
+                  selectedSlot.current_vehicle_id ? (
+                  // Show release option for occupied slots (keep existing logic)
+                  <>
+                    {console.log("🟢 Slot is available:", {
+                      status: selectedSlot.status,
+                      reserved_customer_name:
+                        selectedSlot.reserved_customer_name,
+                      reserved_plate_number: selectedSlot.reserved_plate_number,
+                    })}
                     <p>
                       This{" "}
                       {selectedSlot.section.includes("bike")
@@ -1608,13 +1903,14 @@ const SurveillanceInterface = () => {
                     </DialogFooter>
                   </>
                 ) : (
-                  // Show assignment options for available slots
+                  // Show assignment/reservation options for available slots (keep existing tabs)
                   <Tabs defaultValue="assign">
                     <TabsList className="grid w-full grid-cols-2">
                       <TabsTrigger value="assign">Assign Vehicle</TabsTrigger>
                       <TabsTrigger value="reserve">Reserve Slot</TabsTrigger>
                     </TabsList>
 
+                    {/* Assign Vehicle Tab Content (Keep existing) */}
                     <TabsContent value="assign" className="space-y-4">
                       <div className="space-y-2">
                         <h3 className="text-sm font-medium">
@@ -1647,8 +1943,27 @@ const SurveillanceInterface = () => {
                       </DialogFooter>
                     </TabsContent>
 
+                    {/* Reserve Slot Tab Content (Modified for available slots) */}
                     <TabsContent value="reserve" className="space-y-4">
-                      <p>Reservation functionality not implemented yet.</p>
+                      <div className="space-y-2">
+                        <h3 className="text-sm font-medium">
+                          Select Registered Customer
+                        </h3>
+                        <select
+                          className="w-full p-2 border rounded"
+                          value={selectedCustomer || ""}
+                          onChange={(e) => setSelectedCustomer(e.target.value)}
+                        >
+                          <option value="">Select a customer</option>{" "}
+                          {/* No "None" option when initially reserving */}
+                          {registeredCustomers.map((customer) => (
+                            <option key={customer.id} value={customer.id}>
+                              {customer.display_name_with_plate ||
+                                getCustomerDisplayName(customer)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
 
                       <DialogFooter>
                         <Button
@@ -1656,6 +1971,11 @@ const SurveillanceInterface = () => {
                           onClick={() => setIsSlotDialogOpen(false)}
                         >
                           Cancel
+                        </Button>
+                        <Button onClick={reserveParkingSlot}>
+                          {" "}
+                          {/* Call the reserve function */}
+                          Reserve Slot
                         </Button>
                       </DialogFooter>
                     </TabsContent>

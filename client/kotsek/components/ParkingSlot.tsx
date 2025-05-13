@@ -13,6 +13,9 @@ export interface ParkingSlot {
   current_vehicle_id?: string;
   section: string;
   vehicle_type?: string;
+  reserved_for?: string;
+  reserved_customer_name?: string;
+  reserved_plate_number?: string;
 }
 
 interface ParkingSlotProps {
@@ -21,7 +24,11 @@ interface ParkingSlotProps {
   status: "available" | "occupied" | "reserved";
   section: string;
   plate_number?: string;
-  lot_id?: string;
+  lot_id?: string;  
+  current_vehicle_id?: string;
+ reserved_for?: string, // Corrected parameter type
+    reserved_customer_name?: string, // Corrected parameter type
+    reserved_plate_number?: string 
   onSlotClick: (
     id: string,
     slot_number: number,
@@ -29,9 +36,12 @@ interface ParkingSlotProps {
     lot_id?: string,
     status?: string,
     current_vehicle_id?: string,
-    slots?: ParkingSlot[] // Add slots parameter
+    slots?: ParkingSlot[],
+    reserved_for?: string, // Added to match handleSlotClick signature
+        reserved_customer_name?: string, // Added to match handleSlotClick signature
+        reserved_plate_number?: string // Add slots parameter
   ) => void;
-  current_vehicle_id?: string;
+
 }
 
 interface ParkingSlotsComponentProps {
@@ -54,7 +64,10 @@ interface ParkingSlotsComponentProps {
     lot_id?: string,
     status?: string,
     current_vehicle_id?: string,
-    slots?: ParkingSlot[] // Add slots parameter
+    slots?: ParkingSlot[], // Add slots parameter
+    reserved_for?: string, // Added
+    reserved_customer_name?: string, // Added
+    reserved_plate_number?: string // Added
   ) => void;
 }
 
@@ -66,6 +79,7 @@ interface BikeAreaData {
   lot_id: string;
   section: string;
   slots?: ParkingSlot[];
+  
 }
 
 interface MotorParkingData {
@@ -86,34 +100,66 @@ const ParkingSlotItem = ({
   plate_number,
   lot_id,
   current_vehicle_id,
+  reserved_for, // Destructure the new props
+  reserved_customer_name, // Destructure the new props
+  reserved_plate_number,
   onSlotClick,
-}: ParkingSlotProps) => (
-  <Card
-    className={`
-      w-full h-full border-2 flex items-center justify-center font-bold cursor-pointer transition-colors
-      ${
-        status === "occupied"
-          ? "bg-red-200 border-red-500 hover:bg-red-300"
-          : status === "reserved"
-          ? "bg-yellow-200 border-yellow-500 hover:bg-yellow-300"
-          : "bg-green-200 border-green-500 hover:bg-green-300"
-      }
-    `}
-    onClick={() =>
-      onSlotClick(id, slot_number, section, lot_id, status, current_vehicle_id)
-    }
-  >
-    <CardContent className="p-2 flex items-center justify-center">
-      <span className="text-sm font-bold">{slot_number}</span>
-      {plate_number && (
-        <span className="flex bottom-1 text-xs truncate max-w-full px-1">
-          {plate_number}
-        </span>
-      )}
-    </CardContent>
-  </Card>
-);
+}: ParkingSlotProps) => { // <--- CHANGE 1: Added curly brace for the function body
 
+  // --- You can now add statements here ---
+  // For example, a console log to see the props this item received:
+  // --- End of statements ---
+
+
+  return ( // <--- CHANGE 2: Added explicit return keyword
+    <Card
+      className={`
+        w-full h-full border-2 flex flex-col items-center justify-center font-bold cursor-pointer transition-colors text-center p-1
+        ${
+          status === "occupied"
+            ? "bg-red-200 border-red-500 hover:bg-red-300"
+            : status === "reserved"
+            ? "bg-yellow-200 border-yellow-500 hover:bg-yellow-300"
+            : "bg-green-200 border-green-500 hover:bg-green-300"
+        }
+      `}
+      onClick={() => { // <--- Added curly braces for the onClick handler body
+        // Optional: Add a log here to see parameters just before calling onSlotClick
+        // console.log(`[ParkingSlotItem Slot ${slot_number}] Calling onSlotClick...`);
+
+        onSlotClick(
+          id,                      // 1st argument
+          slot_number,             // 2nd argument
+          section,                 // 3rd argument
+          lot_id,                  // 4th argument
+          status,                  // 5th argument (Passing the actual status prop)
+          current_vehicle_id, 
+          undefined,     // 6th argument
+          reserved_for,            // <-- CORRECTED ARGUMENT ORDER: Pass reserved_for (7th argument)
+          reserved_customer_name,  // <-- CORRECTED ARGUMENT ORDER: Pass reserved_customer_name (8th argument)
+          reserved_plate_number    // <-- CORRECTED ARGUMENT ORDER: Pass reserved_plate_number (9th argument)
+          // Removed the erroneous 'undefined' argument that was previously in the 7th position
+        );
+      }} // <--- Closing curly brace for onClick handler
+    >
+      <CardContent className="p-1 flex flex-col items-center justify-center w-full h-full">
+          <span className="text-sm font-bold">{slot_number}</span>
+          {/* Display plate number if occupied */}
+          {status === 'occupied' && plate_number && (
+            <span className="text-xs truncate max-w-full px-1">
+              {plate_number}
+            </span>
+          )}
+            {/* Display reserved name/plate if reserved */}
+          {status === 'reserved' && reserved_customer_name && reserved_plate_number && (
+            <span className="text-xs truncate max-w-full px-1 text-yellow-800">
+                {reserved_customer_name.split(' ')[0]}: {reserved_plate_number} {/* Display first name and plate */}
+            </span>
+          )}
+        </CardContent>
+    </Card>
+  ); // <--- CHANGE 3: Closing parenthesis and semicolon for the return statement
+};
 const ParkingSlotsComponent = ({
   parkingDataTop,
   parkingDataLeft,
@@ -156,8 +202,7 @@ const ParkingSlotsComponent = ({
       slots: parkingDataBikeRight,
     },
   ];
-  console.log("🧠 Bike Right Data:", parkingDataBikeRight);
-  console.log("🚲 Total:", bikeAreaRight[0].total, "Occupied:", bikeAreaRight[0].occupied);
+
   
   // Motor parking lot data with total occupancy
   const motorParkingLot: MotorParkingData = {
@@ -202,6 +247,9 @@ const ParkingSlotsComponent = ({
         lot_id: "",
         plate_number: "",
         current_vehicle_id: "",
+        reserved_for:"" ,
+        reserved_customer_name:"",
+        reserved_plate_number:"",
       }as ParkingSlot
     );
   });
@@ -218,6 +266,9 @@ const ParkingSlotsComponent = ({
         lot_id: "",
         plate_number: "",
         current_vehicle_id: "",
+        reserved_for:"" ,
+        reserved_customer_name:"",
+        reserved_plate_number:"",
       }as ParkingSlot
     );
   });
@@ -236,6 +287,9 @@ const ParkingSlotsComponent = ({
         lot_id: "",
         plate_number: "",
         current_vehicle_id: "",
+        reserved_for:"" ,
+        reserved_customer_name:"",
+        reserved_plate_number:"",
       }as ParkingSlot
     );
   });
@@ -259,6 +313,9 @@ const ParkingSlotsComponent = ({
           lot_id: "",
           plate_number: "",
           current_vehicle_id: "",
+          reserved_for:"" ,
+          reserved_customer_name:"",
+          reserved_plate_number:"",
         }
       );
       slotCounter++;
@@ -347,6 +404,9 @@ const ParkingSlotsComponent = ({
                       lot_id={slot.lot_id}
                       current_vehicle_id={"current_vehicle_id" in slot ? slot.current_vehicle_id : ""}
                       onSlotClick={onSlotClick}
+                      reserved_for={slot.reserved_for}
+                      reserved_customer_name={slot.reserved_customer_name}
+                      reserved_plate_number={slot.reserved_plate_number}
                     />
                   ))}
                 </div>
@@ -423,6 +483,9 @@ const ParkingSlotsComponent = ({
                           lot_id={slot.lot_id}
                           current_vehicle_id={"current_vehicle_id" in slot ? slot.current_vehicle_id : ""}
                           onSlotClick={onSlotClick}
+                          reserved_for={slot.reserved_for}
+                          reserved_customer_name={slot.reserved_customer_name}
+                          reserved_plate_number={slot.reserved_plate_number}
                         />
                       </div>
                     ))}
@@ -452,6 +515,9 @@ const ParkingSlotsComponent = ({
                         lot_id={slot.lot_id}
                         current_vehicle_id={"current_vehicle_id" in slot ? slot.current_vehicle_id : ""}
                         onSlotClick={onSlotClick}
+                        reserved_for={slot.reserved_for}
+                        reserved_customer_name={slot.reserved_customer_name}
+                        reserved_plate_number={slot.reserved_plate_number}
                       />
                     ))}
                   </div>
@@ -475,6 +541,9 @@ const ParkingSlotsComponent = ({
                         lot_id={slot.lot_id}
                         current_vehicle_id={"current_vehicle_id" in slot ? slot.current_vehicle_id : ""}
                         onSlotClick={onSlotClick}
+                        reserved_for={slot.reserved_for}
+                        reserved_customer_name={slot.reserved_customer_name}
+                        reserved_plate_number={slot.reserved_plate_number}
                       />
                     ))}
                   </div>
@@ -502,6 +571,9 @@ const ParkingSlotsComponent = ({
                         lot_id={slot.lot_id}
                         current_vehicle_id={"current_vehicle_id" in slot ? slot.current_vehicle_id : ""}
                         onSlotClick={onSlotClick}
+                        reserved_for={slot.reserved_for}
+                        reserved_customer_name={slot.reserved_customer_name}
+                        reserved_plate_number={slot.reserved_plate_number}
                       />
                     ))}
                   </div>
@@ -525,6 +597,9 @@ const ParkingSlotsComponent = ({
                         lot_id={slot.lot_id}
                         current_vehicle_id={"current_vehicle_id" in slot ? slot.current_vehicle_id : ""}
                         onSlotClick={onSlotClick}
+                        reserved_for={slot.reserved_for}
+                        reserved_customer_name={slot.reserved_customer_name}
+                        reserved_plate_number={slot.reserved_plate_number}
                       />
                     ))}
                   </div>
@@ -556,6 +631,9 @@ const ParkingSlotsComponent = ({
                           lot_id={slot.lot_id}
                           current_vehicle_id={"current_vehicle_id" in slot ? slot.current_vehicle_id : ""}
                           onSlotClick={onSlotClick}
+                          reserved_for={slot.reserved_for}
+                          reserved_customer_name={slot.reserved_customer_name}
+                          reserved_plate_number={slot.reserved_plate_number}
                         />
                       </div>
                     ))}
