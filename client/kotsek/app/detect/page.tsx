@@ -55,13 +55,13 @@ interface Detection {
   plates: PlateDetection[];
 }
 
-interface User {
+export interface User {
   id: string; // Should be string to match backend UUID
   email: string;
   username?: string; // Keep if applicable
   profile_image: string | null; // Keep if applicable
   first_name?: string; // Optional, based on ParkingCustomer model
-  last_name?: string;   // Optional, based on ParkingCustomer model
+  last_name?: string; // Optional, based on ParkingCustomer model
   plate_number?: string; // Added: Include plate number from backend
   display_name_with_plate?: string; // Added: The formatted string for dropdown
   // Add any other properties your backend returns for a registered customer
@@ -106,8 +106,8 @@ interface SpecialtyVehicleSlot {
   status: "available" | "occupied" | "reserved";
   current_vehicle_id?: string;
   plate_number?: string;
-  section: string;     // ✅ Add this
-  lot_id: string; 
+  section: string; // ✅ Add this
+  lot_id: string;
   reserved_for?: string;
   reserved_customer_name?: string;
   reserved_plate_number?: string;
@@ -122,11 +122,42 @@ interface UnassignedVehicle {
 }
 const getCustomerDisplayName = (customer: User): string => {
   if (customer.first_name || customer.last_name) {
-      return `${customer.first_name || ''} ${customer.last_name || ''}`.trim();
+    return `${customer.first_name || ""} ${customer.last_name || ""}`.trim();
   }
   return customer.username || customer.email || customer.id; // Fallback display
-}
+};
+
 const SurveillanceInterface = () => {
+  const [showCapacityAlert, setShowCapacityAlert] = useState(false);
+  const [alertMessage, setAlertMessage] = useState("");
+  const lastAlertedVehicleType = useRef<string | null>(null);
+  const checkParkingCapacityAlert = () => {
+    const type = entryDetectionData.vehicleType.toLowerCase();
+    let total = 0;
+    let occupied = 0;
+
+    if (type.includes("motorcycle")) {
+      total = motorcycleData.length;
+      occupied = motorcycleData.filter((s) => s.status === "occupied").length;
+    } else if (type.includes("bike")) {
+      total = bicycleData.length;
+      occupied = bicycleData.filter((s) => s.status === "occupied").length;
+    } else if (type.includes("car")) {
+      total = allParkingSlots.length;
+      occupied = allParkingSlots.filter((s) => s.status === "occupied").length;
+    }
+
+    const percent = (occupied / total) * 100;
+    if (percent >= 95) {
+      setAlertMessage(
+        `The ${entryDetectionData.vehicleType} slots are ${percent.toFixed(
+          0
+        )}% full`
+      );
+      setShowCapacityAlert(true);
+    }
+  };
+
   const entryVideoRef = useRef<HTMLImageElement | null>(null);
   const exitVideoRef = useRef<HTMLImageElement | null>(null);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -137,23 +168,23 @@ const SurveillanceInterface = () => {
   const BASE_URL = "http://localhost:5001";
   useEffect(() => {
     socket.current = io(BASE_URL, {
-      transports: ["polling", "websocket"],  // ⬅️ Add "polling" as fallback
+      transports: ["polling", "websocket"], // ⬅️ Add "polling" as fallback
       reconnection: true,
     });
 
     socket.current.on("connect", () => {
       console.log("✅ Socket connected");
     });
-  
+
     socket.current.on("connect_error", (err: Error) => {
       console.error("❌ Connect error:", err);
     });
-    
-  
+
     return () => {
       if (socket.current) socket.current.disconnect();
     };
   }, []);
+
   const [entryEnabled, setEntryEnabled] = useState(false);
   const [exitEnabled, setExitEnabled] = useState(false);
   const [motorcycleData, setMotorcycleData] = useState<ParkingSlot[]>([]);
@@ -166,13 +197,14 @@ const SurveillanceInterface = () => {
     []
   );
   const [motorLotData, setMotorLotData] = useState<SpecialtyVehicleSlot[]>([]);
-  const [exitDetectionData, setExitDetectionData] = useState<EntryDetectionData>({
-    vehicleType: "",
-    plateNumber: "",
-    colorAnnotation: "",
-    ocrText: "",
-    annotationLabel: 0,
-  });
+  const [exitDetectionData, setExitDetectionData] =
+    useState<EntryDetectionData>({
+      vehicleType: "",
+      plateNumber: "",
+      colorAnnotation: "",
+      ocrText: "",
+      annotationLabel: 0,
+    });
   const [guards, setGuards] = useState<Guard[]>([]);
   const [selectedGuard, setSelectedGuard] = useState<string>("");
   const [activeGuard, setActiveGuard] = useState<Guard | null>(null);
@@ -187,7 +219,7 @@ const SurveillanceInterface = () => {
   >([]);
   const [selectedVehicle, setSelectedVehicle] = useState<string | null>(null);
   const [currentSpecialtySection, setCurrentSpecialtySection] =
-  useState<string>("");
+    useState<string>("");
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const [debugInfo, setDebugInfo] = useState({
@@ -207,9 +239,17 @@ const SurveillanceInterface = () => {
       ocrText: "",
       annotationLabel: 0,
     });
-// Add these new state variables for reservation
-const [registeredCustomers, setRegisteredCustomers] = useState<User[]>([] as User[]);
-const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null as string | null);
+  // Add these new state variables for reservation
+
+  const [registeredCustomers, setRegisteredCustomers] = useState<User[]>(
+    [] as User[]
+  );
+  const [selectedCustomer, setSelectedCustomer] = useState<string | null>(
+    null as string | null
+  );
+  const [searchPlate, setSearchPlate] = useState<string>("");
+  const normalizePlate = (plate: string) =>
+    plate.toLowerCase().replace(/\s/g, "");
   // To store the ID (UUID) of the selected customer
   const fetchGuards = async () => {
     try {
@@ -224,11 +264,16 @@ const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null as 
     try {
       // Replace with your actual API endpoint for fetching registered users/customers
       // Assuming your backend has a /customer/registered-customers endpoint
-      const response = await axios.get(`${SERVER_URL}/customer/registered-customers`);
+      const response = await axios.get(
+        `${SERVER_URL}/customer/registered-customers`
+      );
       if (response.data?.success) {
         setRegisteredCustomers(response.data.data);
       } else {
-        console.error("Failed to fetch registered customers:", response.data?.message);
+        console.error(
+          "Failed to fetch registered customers:",
+          response.data?.message
+        );
         toast.error("Failed to load registered customers");
       }
     } catch (error) {
@@ -244,10 +289,26 @@ const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null as 
         setSelectedGuard(response.data.active_guard.id);
       }
     } catch (error) {
-      console.error("Error fetching active guard:", error);
+      if (axios.isAxiosError(error)) {
+        if (error.response?.status === 404) {
+          // This is the expected "no active guard" case, handle silently
+          console.log("No active guard found - this is normal");
+        } else {
+          // This is an unexpected error, log it
+          console.error(
+            "Error fetching active guard:",
+            error.response?.data || error.message
+          );
+        }
+      } else {
+        // Handle non-Axios errors
+        console.error(
+          "Unexpected error fetching active guard:",
+          error instanceof Error ? error.message : String(error)
+        );
+      }
     }
   };
-
   // Add a function to set the active guard
   const handleSetActiveGuard = async () => {
     try {
@@ -282,14 +343,12 @@ const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null as 
       const response = await axios.get(
         `${SERVER_URL}/parking/get-parking-status`
       );
-      
+
       console.log("[fetchParkingData] Raw API Response Data:", response.data);
 
       if (response.data && response.data.success) {
         const data = response.data.data;
         const slots = data?.slots || {};
-
-        
 
         // Handle car slots as before (unchanged)
         setParkingDataLeft(
@@ -298,9 +357,10 @@ const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null as 
             slot_number: slot.slot_number,
             lot_id: slot.lot_id,
             status: slot.status,
-            plate_number: slot.status === "available" ? undefined : slot.plate_number,
+            plate_number:
+              slot.status === "available" ? undefined : slot.plate_number,
             current_vehicle_id: slot.current_vehicle_id || undefined,
-    reserved_plate_number: slot.reserved_plate_number,
+            reserved_plate_number: slot.reserved_plate_number,
             reserved_for: slot.reserved_for,
             reserved_customer_name: slot.reserved_customer_name,
           }))
@@ -312,7 +372,8 @@ const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null as 
             slot_number: slot.slot_number,
             lot_id: slot.lot_id,
             status: slot.status,
-            plate_number: slot.status === "available" ? undefined : slot.plate_number,
+            plate_number:
+              slot.status === "available" ? undefined : slot.plate_number,
             current_vehicle_id: slot.current_vehicle_id || undefined,
             reserved_plate_number: slot.reserved_plate_number,
             reserved_for: slot.reserved_for,
@@ -326,9 +387,10 @@ const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null as 
             slot_number: slot.slot_number,
             lot_id: slot.lot_id,
             status: slot.status,
-            plate_number: slot.status === "available" ? undefined : slot.plate_number,
+            plate_number:
+              slot.status === "available" ? undefined : slot.plate_number,
             current_vehicle_id: slot.current_vehicle_id || undefined,
-    reserved_plate_number: slot.reserved_plate_number,
+            reserved_plate_number: slot.reserved_plate_number,
           }))
         );
 
@@ -338,7 +400,8 @@ const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null as 
             slot_number: slot.slot_number,
             lot_id: slot.lot_id,
             status: slot.status,
-            plate_number: slot.status === "available" ? undefined : slot.plate_number,
+            plate_number:
+              slot.status === "available" ? undefined : slot.plate_number,
             current_vehicle_id: slot.current_vehicle_id || undefined,
             reserved_plate_number: slot.reserved_plate_number,
             reserved_for: slot.reserved_for,
@@ -353,7 +416,8 @@ const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null as 
             slot_number: slot.slot_number,
             lot_id: slot.lot_id,
             status: slot.status,
-            plate_number: slot.status === "available" ? undefined : slot.plate_number,
+            plate_number:
+              slot.status === "available" ? undefined : slot.plate_number,
             current_vehicle_id: slot.current_vehicle_id || undefined,
             vehicle_type: "motorcycle",
           })
@@ -369,7 +433,7 @@ const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null as 
             current_vehicle_id: slot.current_vehicle_id,
             plate_number: slot.plate_number,
             section: "elevated parking",
-            lot_id: "Elevated_MCP"
+            lot_id: "Elevated_MCP",
           }))
         );
 
@@ -379,25 +443,37 @@ const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null as 
           slot_number: slot.slot_number,
           lot_id: slot.lot_id,
           status: slot.status,
-          plate_number: slot.status === "available" ? undefined : slot.plate_number,
+          plate_number:
+            slot.status === "available" ? undefined : slot.plate_number,
           current_vehicle_id: slot.current_vehicle_id || undefined,
           section: slot.section || "", // ✅ REQUIRED for splitting
           vehicle_type: "bicycle",
         }));
-        console.log("🧠 Raw bicycle slot objects:", bicycles.map((b: ParkingSlot) => ({ id: b.id, section: b.section })));
+        console.log(
+          "🧠 Raw bicycle slot objects:",
+          bicycles.map((b: ParkingSlot) => ({ id: b.id, section: b.section }))
+        );
         console.log("🧠 Sample slot object:", bicycles[0]);
 
         setBicycleData(bicycles);
 
         const totalBikes = bicycles.length;
-        const leftBikes   = bicycles.filter((s: ParkingSlot) =>
-          s.section?.trim().toLowerCase() === "bike area left"
+        const leftBikes = bicycles.filter(
+          (s: ParkingSlot) =>
+            s.section?.trim().toLowerCase() === "bike area left"
         );
-        const rightBikes = bicycles.filter((s: ParkingSlot) =>
-          s.section?.trim().toLowerCase() === "bike area right"
+        const rightBikes = bicycles.filter(
+          (s: ParkingSlot) =>
+            s.section?.trim().toLowerCase() === "bike area right"
         );
-        console.log("⬅️ Bike Area Left:", leftBikes.map((b: ParkingSlot) => b.id));
-        console.log("➡️ Bike Area Right:", rightBikes.map((b: ParkingSlot) => b.id));
+        console.log(
+          "⬅️ Bike Area Left:",
+          leftBikes.map((b: ParkingSlot) => b.id)
+        );
+        console.log(
+          "➡️ Bike Area Right:",
+          rightBikes.map((b: ParkingSlot) => b.id)
+        );
         console.log("🚲 Total bicycles fetched:", bicycles);
         console.log("⬅️ Bike Area Left:", leftBikes);
         console.log("➡️ Bike Area Right:", rightBikes);
@@ -409,7 +485,7 @@ const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null as 
             current_vehicle_id: slot.current_vehicle_id,
             plate_number: slot.plate_number,
             section: "bike area left", // or right
-            lot_id: slot.lot_id ?? "PE1_Bike"
+            lot_id: slot.lot_id ?? "PE1_Bike",
           }))
         );
 
@@ -421,7 +497,7 @@ const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null as 
             current_vehicle_id: slot.current_vehicle_id,
             plate_number: slot.plate_number,
             section: "bike area right", // or right
-            lot_id: slot.lot_id ?? "PE2_Bike"
+            lot_id: slot.lot_id ?? "PE2_Bike",
           }))
         );
       }
@@ -488,116 +564,119 @@ const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null as 
   // Handle slot click
   // Update the handleSlotClick function
   // Handle slot click
-// Handle slot click
-const handleSlotClick = useCallback(
-  (
-    id: string,
-    slot_number: number,
-    section: string,
-    lot_id?: string,
-    status?: string,
-    current_vehicle_id?: string,
-    slot?: ParkingSlot[],
-    reserved_for?:string,
-    reserved_customer_name?:string,
-    reserved_plate_number?:string,
-    
-    // The ParkingSlotsComponent should now ideally pass the full slot object
-    // including reserved_for, reserved_customer_name, reserved_plate_number from the backend response.
-    // We will still find the full slot data from our state arrays as a fallback/confirmation.
-  ) => {
-    // ADD THIS CONSOLE LOG AS THE FIRST LINE
-    console.log("[handleSlotClick] Received click parameters:", {
-      id,
-      slot_number,
-      section,
-      lot_id,
-      status,
-      current_vehicle_id,
-      reserved_for,
-      reserved_customer_name,
-      reserved_plate_number
-  });
+  // Handle slot click
+  const handleSlotClick = useCallback(
+    (
+      id: string,
+      slot_number: number,
+      section: string,
+      lot_id?: string,
+      status?: string,
+      current_vehicle_id?: string,
+      slot?: ParkingSlot[],
+      reserved_for?: string,
+      reserved_customer_name?: string,
+      reserved_plate_number?: string
 
+      // The ParkingSlotsComponent should now ideally pass the full slot object
+      // including reserved_for, reserved_customer_name, reserved_plate_number from the backend response.
+      // We will still find the full slot data from our state arrays as a fallback/confirmation.
+    ) => {
+      // ADD THIS CONSOLE LOG AS THE FIRST LINE
+      console.log("[handleSlotClick] Received click parameters:", {
+        id,
+        slot_number,
+        section,
+        lot_id,
+        status,
+        current_vehicle_id,
+        reserved_for,
+        reserved_customer_name,
+        reserved_plate_number,
+      });
 
-    const slotStatus = status || "available";
+      const slotStatus = status || "available";
 
-    // Find the full slot data from the state arrays. This data should now include
-    // reserved_for, reserved_customer_name, and reserved_plate_number if available.
-    // const foundSlot = [...parkingDataLeft, ...parkingDataRight, ...parkingDataCenter, ...parkingDataTop, ...bikeLeftData, ...bikeRightData, ...motorLotData]
-    //                     .find(s => s.id === id);
+      // Find the full slot data from the state arrays. This data should now include
+      // reserved_for, reserved_customer_name, and reserved_plate_number if available.
+      // const foundSlot = [...parkingDataLeft, ...parkingDataRight, ...parkingDataCenter, ...parkingDataTop, ...bikeLeftData, ...bikeRightData, ...motorLotData]
+      //                     .find(s => s.id === id);
 
-    // Populate the selected slot data directly from the found slot
-    const slotData: SelectedSlot = {
-      id:  id, // Use found id if available, fallback to passed id
-      slot_number:  slot_number, // Use found number if available
-      section: section, // Use found section if available
-      lot_id:  lot_id, // Use found lot_id if available
-      status:  slotStatus, // Use found status if available
-      current_vehicle_id:  current_vehicle_id, // Use found vehicle_id if available
-      reserved_for: reserved_for, // Get reserved_for directly from the found slot
-      reserved_customer_name: reserved_customer_name, // Get reserved name directly
-      reserved_plate_number: reserved_plate_number, // Get reserved plate directly
-    };
+      // Populate the selected slot data directly from the found slot
+      const slotData: SelectedSlot = {
+        id: id, // Use found id if available, fallback to passed id
+        slot_number: slot_number, // Use found number if available
+        section: section, // Use found section if available
+        lot_id: lot_id, // Use found lot_id if available
+        status: slotStatus, // Use found status if available
+        current_vehicle_id: current_vehicle_id, // Use found vehicle_id if available
+        reserved_for: reserved_for, // Get reserved_for directly from the found slot
+        reserved_customer_name: reserved_customer_name, // Get reserved name directly
+        reserved_plate_number: reserved_plate_number, // Get reserved plate directly
+      };
 
-    // Set the selected slot state BEFORE showing any dialog
-    setSelectedSlot(slotData);
+      // Set the selected slot state BEFORE showing any dialog
+      setSelectedSlot(slotData);
 
-    console.log("[handleSlotClick] Populated selectedSlot:", slotData);
+      console.log("[handleSlotClick] Populated selectedSlot:", slotData);
 
+      // --- Handle specialty vehicle sections ---
+      if (
+        section === "bike area left" ||
+        section === "bike area right" ||
+        section === "elevated parking"
+      ) {
+        setCurrentSpecialtySection(section);
 
+        if (section === "bike area left" || section === "bike area right") {
+          setShowBicycleDialog(true);
+          setSelectedVehicleType("bicycle");
+          // Refresh data when opening specialty dialogs to ensure they have latest state
+          fetchParkingData();
+          fetchUnassignedVehicles();
+          fetchRegisteredCustomers();
+        } else if (section === "elevated parking") {
+          setShowMotorcycleDialog(true);
+          setSelectedVehicleType("motorcycle");
+          // Refresh data when opening specialty dialogs
+          fetchParkingData();
+          fetchUnassignedVehicles();
+          fetchRegisteredCustomers();
+        }
 
-    // --- Handle specialty vehicle sections ---
-    if (
-      section === "bike area left" ||
-      section === "bike area right" ||
-      section === "elevated parking"
-    ) {
-      setCurrentSpecialtySection(section);
-
-      if (section === "bike area left" || section === "bike area right") {
-        setShowBicycleDialog(true);
-        setSelectedVehicleType("bicycle");
-         // Refresh data when opening specialty dialogs to ensure they have latest state
-         fetchParkingData();
-         fetchUnassignedVehicles();
-         fetchRegisteredCustomers();
-
-      } else if (section === "elevated parking") {
-        setShowMotorcycleDialog(true);
-        setSelectedVehicleType("motorcycle");
-         // Refresh data when opening specialty dialogs
-         fetchParkingData();
-         fetchUnassignedVehicles();
-         fetchRegisteredCustomers();
+        // Reset selected vehicle and customer when opening any specialty dialog
+        setSelectedVehicle(null);
+        setSelectedCustomer(null);
+        return; // Exit the function after handling specialty sections
       }
+      // --- End specialty vehicle handling ---
 
-      // Reset selected vehicle and customer when opening any specialty dialog
-      setSelectedVehicle(null);
+      // --- Handle regular parking slots (car) ---
+      // If it's not a specialty section, open the main slot dialog
+      setIsSlotDialogOpen(true);
+
+      // Only reset selected vehicle if we're going to assign a new one
+      if (slotData.status === "available" || !slotData.current_vehicle_id) {
+        setSelectedVehicle(null);
+      }
+      // Always reset selected customer when opening the dialog for a car slot
       setSelectedCustomer(null);
-      return; // Exit the function after handling specialty sections
-    }
-    // --- End specialty vehicle handling ---
-
-
-    // --- Handle regular parking slots (car) ---
-    // If it's not a specialty section, open the main slot dialog
-    setIsSlotDialogOpen(true);
-
-    // Only reset selected vehicle if we're going to assign a new one
-    if (slotData.status === "available" || !slotData.current_vehicle_id) {
-       setSelectedVehicle(null);
-    }
-     // Always reset selected customer when opening the dialog for a car slot
-     setSelectedCustomer(null);
-
-
-  },
-  // Add all state variables and functions that are accessed inside useCallback as dependencies
-  [parkingDataLeft, parkingDataRight, parkingDataCenter, parkingDataTop, bikeLeftData, bikeRightData, motorLotData, registeredCustomers, fetchParkingData, fetchUnassignedVehicles, fetchRegisteredCustomers]
-);
-
-
+    },
+    // Add all state variables and functions that are accessed inside useCallback as dependencies
+    [
+      parkingDataLeft,
+      parkingDataRight,
+      parkingDataCenter,
+      parkingDataTop,
+      bikeLeftData,
+      bikeRightData,
+      motorLotData,
+      registeredCustomers,
+      fetchParkingData,
+      fetchUnassignedVehicles,
+      fetchRegisteredCustomers,
+    ]
+  );
 
   // Update the assignParkingSlot function to handle different section types
   // Update assignParkingSlot function
@@ -614,7 +693,7 @@ const handleSlotClick = useCallback(
       if (!lotNumber) {
         if (selectedSlot.section === "bike area left") {
           lotNumber = "PE1_Bike";
-        } else if (selectedSlot.section === "bike arearight") {
+        } else if (selectedSlot.section === "bike area right") {
           lotNumber = "PE2_Bike";
         } else if (selectedSlot.section === "elevated parking") {
           lotNumber = "Elevated_MCP";
@@ -664,7 +743,7 @@ const handleSlotClick = useCallback(
     }
   };
 
-// Create a function to handle the reservation logic
+  // Create a function to handle the reservation logic
   const reserveParkingSlot = async () => {
     if (!selectedSlot) {
       toast.error("Invalid slot selected");
@@ -673,61 +752,78 @@ const handleSlotClick = useCallback(
 
     // Determine the lot number based on section and ID
     let lotNumber = selectedSlot.lot_id || "";
-      if (!lotNumber) {
-        if (selectedSlot.section === "bike area left") {
-          lotNumber = "PE1_Bike";
-        } else if (selectedSlot.section === "bike arearight") { // Note: "bike arearight" might be a typo, check backend
-          lotNumber = "PE2_Bike";
-        } else if (selectedSlot.section === "elevated parking") {
-          lotNumber = "Elevated_MCP";
-        } else if (selectedSlot.section === "top") {
-          lotNumber = `PE2_Top`; // Assuming lot_id structure
-        } else if (selectedSlot.section === "left") {
-          lotNumber = `PE1_Left`; // Assuming lot_id structure
-        } else if (selectedSlot.section === "right") {
-          lotNumber = `BLDG1_Right`; // Assuming lot_id structure
-        } else if (selectedSlot.section === "center-upper") {
-          lotNumber = `CENTER1_Upper`; // Assuming lot_id structure
-        } else if (selectedSlot.section === "center-lower") {
-          lotNumber = `CENTER2_Lower`; // Assuming lot_id structure
-        } else {
-          // Fallback or handle other sections
-          lotNumber = `UNKNOWN_LOT_${selectedSlot.section}`;
-        }
+    if (!lotNumber) {
+      if (selectedSlot.section === "bike area left") {
+        lotNumber = "PE1_Bike";
+      } else if (selectedSlot.section === "bike arearight") {
+        // Note: "bike arearight" might be a typo, check backend
+        lotNumber = "PE2_Bike";
+      } else if (selectedSlot.section === "elevated parking") {
+        lotNumber = "Elevated_MCP";
+      } else if (selectedSlot.section === "top") {
+        lotNumber = `PE2_Top`; // Assuming lot_id structure
+      } else if (selectedSlot.section === "left") {
+        lotNumber = `PE1_Left`; // Assuming lot_id structure
+      } else if (selectedSlot.section === "right") {
+        lotNumber = `BLDG1_Right`; // Assuming lot_id structure
+      } else if (selectedSlot.section === "center-upper") {
+        lotNumber = `CENTER1_Upper`; // Assuming lot_id structure
+      } else if (selectedSlot.section === "center-lower") {
+        lotNumber = `CENTER2_Lower`; // Assuming lot_id structure
+      } else {
+        // Fallback or handle other sections
+        lotNumber = `UNKNOWN_LOT_${selectedSlot.section}`;
       }
-
-    // Determine the API endpoint and data based on whether a customer is selected
-    const isCancellingReservation = selectedCustomer === ""; // Check if "None" is selected
-    const apiEndpoint = isCancellingReservation ? `${SERVER_URL}/parking/release-slot` : `${SERVER_URL}/parking/reserve-slot`;
-    const requestData: any = {
-        slot_number: selectedSlot.slot_number.toString(), // Sending slot_number as slot_id
-        slot_section: selectedSlot.section,
-        lot_id: lotNumber, // Pass the determined lotNumber
-    };
-
-    if (isCancellingReservation) {
-        // For releasing a reservation, send slot identifier
-        requestData.id = selectedSlot.id; // Send the slot UUID for release
-        // The backend release endpoint doesn't need customer_id or entry_id
-    } else {
-        // For reserving or changing reservation, send customer_id
-        if (!selectedCustomer) { // Should be caught by initial check, but safety first
-            toast.error("Please select a customer to reserve the slot.");
-            return;
-        }
-        requestData.customer_id = selectedCustomer; // Sending the selected customer's UUID
     }
 
+    // Determine the API endpoint and data based on whether a customer is selected
+    const isCancellingReservation = selectedCustomer === null; // Check if "None" is selected
+    const apiEndpoint = isCancellingReservation
+      ? `${SERVER_URL}/parking/release-slot`
+      : `${SERVER_URL}/parking/reserve-slot`;
+    const requestData: any = {
+      slot_number: selectedSlot.slot_number.toString(), // Sending slot_number as slot_id
+      section: selectedSlot.section,
+      slot_section: selectedSlot.section,
+      lot_id: lotNumber, // Pass the determined lotNumber
+    };
+    console.log(
+      `selected customer? : ${isCancellingReservation}${selectedCustomer}`
+    );
+    console.log("UUID:", selectedSlot.id);
+    if (isCancellingReservation) {
+      // For releasing a reservation, send slot identifier
+      requestData.id = selectedSlot.id; // Send the slot UUID for release
+      // The backend release endpoint doesn't need customer_id or entry_id
+    } else {
+      // For reserving or changing reservation, send customer_id
+      if (!selectedCustomer) {
+        // Should be caught by initial check, but safety first
+        toast.error("Please select a customer to reserve the slot.");
+        return;
+      }
+      requestData.customer_id = selectedCustomer; // Sending the selected customer's UUID
+    }
 
     try {
-      console.log(`Attempting to ${isCancellingReservation ? 'release reservation for' : 'reserve'} slot:`, requestData);
+      console.log(
+        `Attempting to ${
+          isCancellingReservation ? "release reservation for" : "reserve"
+        } slot:`,
+        requestData
+      );
 
       const response = await axios.post(apiEndpoint, requestData);
       console.log(`[reserveParkingSlot] Sending request to: ${apiEndpoint}`);
       console.log("[reserveParkingSlot] Request data:", requestData);
 
       if (response.data?.success) {
-        toast.success(response.data.message || `Slot ${isCancellingReservation ? 'made available' : 'reserved'} successfully!`);
+        toast.success(
+          response.data.message ||
+            `Slot ${
+              isCancellingReservation ? "made available" : "reserved"
+            } successfully!`
+        );
         setIsSlotDialogOpen(false);
         setSelectedCustomer(null); // Clear selected customer
 
@@ -736,32 +832,54 @@ const handleSlotClick = useCallback(
         // Optionally refresh customer/unassigned lists if reservation affects them
         fetchRegisteredCustomers();
         fetchUnassignedVehicles();
-
       } else {
-        toast.error(response.data?.message || `Failed to ${isCancellingReservation ? 'make slot available' : 'reserve slot'}`);
+        toast.error(
+          response.data?.message ||
+            `Failed to ${
+              isCancellingReservation ? "make slot available" : "reserve slot"
+            }`
+        );
       }
     } catch (error) {
-      console.error(`Error during ${isCancellingReservation ? 'reservation release' : 'reservation'}:`, error);
+      console.error(
+        `Error during ${
+          isCancellingReservation ? "reservation release" : "reservation"
+        }:`,
+        error
+      );
       if (axios.isAxiosError(error)) {
-          console.error("API Error Response:", {
-            status: error.response?.status,
-            data: error.response?.data,
-          });
-          toast.error(error.response?.data?.message || `An API error occurred during ${isCancellingReservation ? 'reservation release' : 'reservation'}.`);
+        console.error("API Error Response:", {
+          status: error.response?.status,
+          data: error.response?.data,
+        });
+        toast.error(
+          error.response?.data?.message ||
+            `An API error occurred during ${
+              isCancellingReservation ? "reservation release" : "reservation"
+            }.`
+        );
       } else {
-          toast.error(`An unexpected error occurred during ${isCancellingReservation ? 'reservation release' : 'reservation'}.`);
+        toast.error(
+          `An unexpected error occurred during ${
+            isCancellingReservation ? "reservation release" : "reservation"
+          }.`
+        );
       }
     }
   };
 
-  const assignSpecialtySlot = async (slotNumber: number, section: string, lotId: string) => {
+  const assignSpecialtySlot = async (
+    slotNumber: number,
+    section: string,
+    lotId: string
+  ) => {
     if (!selectedVehicle) {
       toast.error("Please select a vehicle to assign");
       return;
     }
-  
+
     console.log("Assigning slot:", { slotNumber, section, lotId });
-  
+
     try {
       const response = await axios.post(`${SERVER_URL}/parking/assign-slot`, {
         slot_id: slotNumber.toString(),
@@ -770,7 +888,7 @@ const handleSlotClick = useCallback(
         lot_id: lotId,
         vehicle_type: selectedVehicleType,
       });
-  
+
       if (response.data?.success) {
         toast.success(response.data.message);
         setShowBicycleDialog(false);
@@ -785,13 +903,14 @@ const handleSlotClick = useCallback(
       toast.error("An error occurred while assigning slot");
     }
   };
-  
 
-
-
-  const handleAssignSlot = (slot_number: number, section: string, lot_id: string) => {
+  const handleAssignSlot = (
+    slot_number: number,
+    section: string,
+    lot_id: string
+  ) => {
     assignSpecialtySlot(slot_number, section, lot_id); // Call your existing function
-  };  
+  };
 
   const releaseSpecialtySlot = async (slotId: string) => {
     try {
@@ -947,6 +1066,92 @@ const handleSlotClick = useCallback(
     ...(parkingDataCenter || []),
     ...(parkingDataTop || []),
   ];
+  useEffect(() => {
+    const type = entryDetectionData.vehicleType?.toLowerCase();
+    if (!entryEnabled || !type || type === "no detection") {
+      console.log("🚫 Skipping: entry not enabled or invalid type:", type);
+      return;
+    }
+
+    if (lastAlertedVehicleType.current?.toLowerCase() === type) {
+      console.log(`🟡 Skipping alert: already shown for ${type}`);
+      return;
+    }
+
+    const isCar = type.includes("car");
+    const isMotor = type.includes("motorcycle");
+    const isBike = type.includes("bicycle");
+
+    const carOccupied = allParkingSlots.filter(
+      (slot) => slot.status === "occupied"
+    ).length;
+    const carTotal = allParkingSlots.length;
+    const carPercent = (carOccupied / carTotal) * 100;
+
+    const motorOccupied = motorcycleData.filter(
+      (slot) => slot.status === "occupied"
+    ).length;
+    const motorTotal = motorcycleData.length;
+    const motorPercent = (motorOccupied / motorTotal) * 100;
+
+    const bikeOccupied = bicycleData.filter(
+      (slot) => slot.status === "occupied"
+    ).length;
+    const bikeTotal = bicycleData.length;
+    const bikePercent = (bikeOccupied / bikeTotal) * 100;
+
+    console.log(
+      `🔍 Capacity Check: type=${type}, car=${carPercent}%, motor=${motorPercent}%, bike=${bikePercent}%`
+    );
+
+    if (isCar && carPercent >= 90) {
+      setTimeout(() => {
+        setAlertMessage(`The car slots are ${Math.round(carPercent)}% full.`);
+        setShowCapacityAlert(true);
+      }, 2000);
+      lastAlertedVehicleType.current = type;
+      console.log("🚨 Triggered alert for car");
+    } else if (isMotor && motorPercent >= 95) {
+      setTimeout(() => {
+        setAlertMessage(
+          `The motorcycle slots are ${Math.round(motorPercent)}% full.`
+        );
+        setShowCapacityAlert(true);
+      }, 2000);
+      lastAlertedVehicleType.current = type;
+      console.log("🚨 Triggered alert for motorcycle");
+    } else if (isBike && bikePercent >= 95) {
+      setTimeout(() => {
+        setAlertMessage(
+          `The bicycle slots are ${Math.round(bikePercent)}% full.`
+        );
+        setShowCapacityAlert(true);
+      }, 2000);
+      lastAlertedVehicleType.current = type;
+      console.log("🚨 Triggered alert for bicycle");
+    }
+  }, [
+    entryEnabled,
+    entryDetectionData.vehicleType,
+    allParkingSlots,
+    motorcycleData,
+    bicycleData,
+  ]);
+
+  useEffect(() => {
+    if (!entryEnabled) return;
+
+    const type = entryDetectionData.vehicleType?.toLowerCase();
+
+    if (
+      lastAlertedVehicleType.current &&
+      type !== lastAlertedVehicleType.current?.toLowerCase()
+    ) {
+      console.log("🔄 Resetting alert cache for new vehicle type:", type);
+      lastAlertedVehicleType.current = null;
+    }
+  }, [entryDetectionData.vehicleType, entryEnabled]);
+
   const totalSpaces = allParkingSlots.length;
   const occupiedSpaces = allParkingSlots.filter(
     (slot) => slot.status === "occupied"
@@ -1247,10 +1452,19 @@ const handleSlotClick = useCallback(
               colorAnnotation: mostConfidentDetection?.color_annotation,
               ocrText:
                 mostConfidentDetection.plates
-                  .map((plate) => plate.ocr_text)
+                  ?.map((plate) => plate.ocr_text)
                   .join(", ") || "",
               annotationLabel: parseInt(mostConfidentDetection.label),
             });
+            if (mostConfidentDetection.label === "bicycle") {
+              setEntryDetectionData({
+                vehicleType: mostConfidentDetection.label,
+                plateNumber: "No Plate",
+                colorAnnotation: mostConfidentDetection?.color_annotation,
+                ocrText: "No Plate",
+                annotationLabel: parseInt(mostConfidentDetection.label),
+              });
+            }
           } else {
             setEntryDetectionData({
               vehicleType: "No detection",
@@ -1318,6 +1532,7 @@ const handleSlotClick = useCallback(
                 socket.current?.emit("stop_entry_video");
                 setEntryEnabled(false);
               } else {
+                lastAlertedVehicleType.current = null;
                 if (!socket.current || !socket.current.connected) {
                   socket.current = io(SERVER_URL, {
                     reconnection: true,
@@ -1327,51 +1542,66 @@ const handleSlotClick = useCallback(
 
                   socket.current.on("connect", () => {
                     console.log("Socket reconnected (entry)");
-                    socket.current?.emit("start_entry_video", { camera_index: selectedCamera });
+                    socket.current?.emit("start_entry_video", {
+                      camera_index: selectedCamera,
+                    });
                   });
 
                   socket.current.on("connect_error", (socketError: Error) => {
-                    console.error("Socket connection error (entry):", socketError);
+                    console.error(
+                      "Socket connection error (entry):",
+                      socketError
+                    );
                   });
 
-                  socket.current.on("entry_video_frame", (data: VideoFrameData) => {
-                    if (data?.entrance_frame && entryVideoRef.current) {
-                      entryVideoRef.current.src = `data:image/jpeg;base64,${data.entrance_frame}`;
-                    }
+                  socket.current.on(
+                    "entry_video_frame",
+                    (data: VideoFrameData) => {
+                      if (data?.entrance_frame && entryVideoRef.current) {
+                        entryVideoRef.current.src = `data:image/jpeg;base64,${data.entrance_frame}`;
+                      }
 
-                    if (data.entrance_detections?.length > 0) {
-                      const mostConfidentDetection = data.entrance_detections.reduce(
-                        (prev, current) =>
-                          current.confidence > prev.confidence ? current : prev
-                      );
+                      if (data.entrance_detections?.length > 0) {
+                        const mostConfidentDetection =
+                          data.entrance_detections.reduce((prev, current) =>
+                            current.confidence > prev.confidence
+                              ? current
+                              : prev
+                          );
 
-                      const PlateNum =
-                        mostConfidentDetection.plates
-                          ?.map((plate) => plate.ocr_text)
-                          .join(", ") || "";
-
-                      setEntryDetectionData({
-                        vehicleType: mostConfidentDetection.label,
-                        plateNumber: PlateNum,
-                        colorAnnotation: mostConfidentDetection?.color_annotation,
-                        ocrText:
+                        const PlateNum =
                           mostConfidentDetection.plates
-                            .map((plate) => plate.ocr_text)
-                            .join(", ") || "",
-                        annotationLabel: parseInt(mostConfidentDetection.label),
-                      });
-                    } else {
-                      setEntryDetectionData({
-                        vehicleType: "No detection",
-                        plateNumber: "N/A",
-                        colorAnnotation: "N/A",
-                        ocrText: "",
-                        annotationLabel: 0,
-                      });
+                            ?.map((plate) => plate.ocr_text)
+                            .join(", ") || "";
+
+                        setEntryDetectionData({
+                          vehicleType: mostConfidentDetection.label,
+                          plateNumber: PlateNum,
+                          colorAnnotation:
+                            mostConfidentDetection?.color_annotation,
+                          ocrText:
+                            mostConfidentDetection.plates
+                              .map((plate) => plate.ocr_text)
+                              .join(", ") || "",
+                          annotationLabel: parseInt(
+                            mostConfidentDetection.label
+                          ),
+                        });
+                      } else {
+                        setEntryDetectionData({
+                          vehicleType: "No detection",
+                          plateNumber: "N/A",
+                          colorAnnotation: "N/A",
+                          ocrText: "",
+                          annotationLabel: 0,
+                        });
+                      }
                     }
-                  });
+                  );
                 } else {
-                  socket.current.emit("start_entry_video", { camera_index: selectedCamera });
+                  socket.current.emit("start_entry_video", {
+                    camera_index: selectedCamera,
+                  });
                 }
 
                 setEntryEnabled(true);
@@ -1389,8 +1619,6 @@ const handleSlotClick = useCallback(
             )}
           </Button>
 
-          
-          
           <Button
             variant={exitEnabled ? "destructive" : "default"}
             onClick={() => {
@@ -1398,6 +1626,7 @@ const handleSlotClick = useCallback(
                 socket.current?.emit("stop_exit_video");
                 setExitEnabled(false);
               } else {
+                lastAlertedVehicleType.current = null;
                 if (!socket.current || !socket.current.connected) {
                   socket.current = io(SERVER_URL, {
                     reconnection: true,
@@ -1407,51 +1636,69 @@ const handleSlotClick = useCallback(
 
                   socket.current.on("connect", () => {
                     console.log("Socket reconnected (exit)");
-                    socket.current?.emit("start_exit_video", { camera_index: selectedCamera });
+                    socket.current?.emit("start_exit_video", {
+                      camera_index: selectedCamera,
+                    });
                   });
 
                   socket.current.on("connect_error", (socketError: Error) => {
-                    console.error("Socket connection error (exit):", socketError);
+                    console.error(
+                      "Socket connection error (exit):",
+                      socketError
+                    );
                   });
 
-                  socket.current.on("exit_video_frame", (data: VideoFrameData) => {
-                    if (data?.exit_frame && exitVideoRef.current) {
-                      exitVideoRef.current.src = `data:image/jpeg;base64,${data.exit_frame}`;
-                    }
+                  socket.current.on(
+                    "exit_video_frame",
+                    (data: VideoFrameData) => {
+                      if (data?.exit_frame && exitVideoRef.current) {
+                        exitVideoRef.current.src = `data:image/jpeg;base64,${data.exit_frame}`;
+                      }
 
-                    if (data.exit_detections && data.exit_detections.length > 0) {
-                      const mostConfidentDetection = data.exit_detections.reduce(
-                        (prev, current) =>
-                          current.confidence > prev.confidence ? current : prev
-                      );
+                      if (
+                        data.exit_detections &&
+                        data.exit_detections.length > 0
+                      ) {
+                        const mostConfidentDetection =
+                          data.exit_detections.reduce((prev, current) =>
+                            current.confidence > prev.confidence
+                              ? current
+                              : prev
+                          );
 
-                      const PlateNum =
-                        mostConfidentDetection.plates
-                          ?.map((plate) => plate.ocr_text)
-                          .join(", ") || "";
-
-                      setExitDetectionData({
-                        vehicleType: mostConfidentDetection.label,
-                        plateNumber: PlateNum,
-                        colorAnnotation: mostConfidentDetection?.color_annotation,
-                        ocrText:
+                        const PlateNum =
                           mostConfidentDetection.plates
-                            .map((plate) => plate.ocr_text)
-                            .join(", ") || "",
-                        annotationLabel: parseInt(mostConfidentDetection.label),
-                      });
-                    } else {
-                      setExitDetectionData({
-                        vehicleType: "No detection",
-                        plateNumber: "N/A",
-                        colorAnnotation: "N/A",
-                        ocrText: "",
-                        annotationLabel: 0,
-                      });
+                            ?.map((plate) => plate.ocr_text)
+                            .join(", ") || "";
+
+                        setExitDetectionData({
+                          vehicleType: mostConfidentDetection.label,
+                          plateNumber: PlateNum,
+                          colorAnnotation:
+                            mostConfidentDetection?.color_annotation,
+                          ocrText:
+                            mostConfidentDetection.plates
+                              .map((plate) => plate.ocr_text)
+                              .join(", ") || "",
+                          annotationLabel: parseInt(
+                            mostConfidentDetection.label
+                          ),
+                        });
+                      } else {
+                        setExitDetectionData({
+                          vehicleType: "No detection",
+                          plateNumber: "N/A",
+                          colorAnnotation: "N/A",
+                          ocrText: "",
+                          annotationLabel: 0,
+                        });
+                      }
                     }
-                  });
+                  );
                 } else {
-                  socket.current.emit("start_exit_video", { camera_index: selectedCamera });
+                  socket.current.emit("start_exit_video", {
+                    camera_index: selectedCamera,
+                  });
                 }
 
                 setExitEnabled(true);
@@ -1560,25 +1807,32 @@ const handleSlotClick = useCallback(
         </div>
         <UnassignedVehiclesTable />
         {/* Parking Slots Section - Now Full Width below entry stream */}
+        <div className="flex items-center space-x-4 mt-6">
+          <input
+            type="text"
+            placeholder="Search plate number..."
+            className="p-2 border rounded w-[300px]"
+            value={searchPlate}
+            onChange={(e) => setSearchPlate(e.target.value)}
+          />
+          <span className="text-sm text-gray-500">
+            Enter plate number to highlight the slot
+          </span>
+        </div>
+
         <Card className="w-full mt-6">
           <CardHeader>
             <CardTitle>Parking Slots Overview</CardTitle>
           </CardHeader>
           <CardContent className="p-6">
             <div className="flex flex-col space-y-6">
-
-            
               {/* Parking Slots Visual Component */}
               <ParkingSlotsComponent
-              
                 parkingDataLeft={parkingDataLeft}
                 parkingDataRight={parkingDataRight}
                 parkingDataCenter={parkingDataCenter}
                 parkingDataTop={parkingDataTop}
-
-
                 parkingDataBikeLeft={bikeLeftData}
-
                 parkingDataBikeRight={bikeRightData}
                 parkingDataMotor={motorcycleData}
                 totalSpaces={totalSpaces}
@@ -1587,6 +1841,8 @@ const handleSlotClick = useCallback(
                 reservedSpaces={reservedSpaces}
                 capacityStatus={capacityStatus}
                 onSlotClick={handleSlotClick}
+                registeredCustomers={registeredCustomers}
+                searchPlate={searchPlate}
               />
             </div>
           </CardContent>
@@ -1630,7 +1886,9 @@ const handleSlotClick = useCallback(
               <DialogTitle>
                 {selectedSlot?.section.includes("bike")
                   ? `Manage Bike Area ${
-                      selectedSlot.section === "bike area left" ? "Left" : "Right"
+                      selectedSlot.section === "bike area left"
+                        ? "Left"
+                        : "Right"
                     }`
                   : selectedSlot?.section === "elevated parking"
                   ? "Manage Motor Parking Lot"
@@ -1643,98 +1901,134 @@ const handleSlotClick = useCallback(
 
             {selectedSlot && (
               <div className="space-y-4 py-4">
-                
                 {/* Display reserved info if status is reserved */}
-                {selectedSlot.status === 'reserved' && selectedSlot.reserved_customer_name && selectedSlot.reserved_plate_number ? (
+                {selectedSlot.status === "reserved" &&
+                selectedSlot.reserved_customer_name &&
+                selectedSlot.reserved_plate_number ? (
                   <>
-                {console.log("Inside RESERVED block:", {
-                    status: selectedSlot.status,
-                    reserved_customer_name: selectedSlot.reserved_customer_name,
-                    reserved_plate_number: selectedSlot.reserved_plate_number
-                  })}
+                    {console.log("Inside RESERVED block:", {
+                      status: selectedSlot.status,
+                      reserved_customer_name:
+                        selectedSlot.reserved_customer_name,
+                      reserved_plate_number: selectedSlot.reserved_plate_number,
+                    })}
                     <p className="text-lg font-medium text-green-700">
                       This slot is reserved for:
                     </p>
                     <p className="text-xl font-bold">
-                      {selectedSlot.reserved_customer_name}: {selectedSlot.reserved_plate_number}
+                      {selectedSlot.reserved_customer_name}:{" "}
+                      {selectedSlot.reserved_plate_number}
                     </p>
                     <p className="text-sm text-gray-600">
-                      Only a vehicle with this plate number can be assigned here.
+                      Only a vehicle with this plate number can be assigned
+                      here.
                     </p>
-                    <Tabs defaultValue="assign"> {/* Still show tabs, but filter assign */}
+                    <Tabs defaultValue="assign">
+                      {" "}
+                      {/* Still show tabs, but filter assign */}
                       <TabsList className="grid w-full grid-cols-2">
-                        <TabsTrigger value="assign">Assign Reserved Vehicle</TabsTrigger> {/* Updated text */}
-                        <TabsTrigger value="reserve">Change Reservation</TabsTrigger> {/* Updated text */}
+                        <TabsTrigger value="assign">
+                          Assign Reserved Vehicle
+                        </TabsTrigger>{" "}
+                        {/* Updated text */}
+                        <TabsTrigger value="reserve">
+                          Change Reservation
+                        </TabsTrigger>{" "}
+                        {/* Updated text */}
                       </TabsList>
                       <TabsContent value="assign" className="space-y-4">
                         <div className="space-y-2">
-                            <h3 className="text-sm font-medium">
-                              Select Reserved Vehicle Entry
-                            </h3>
-                            {/* Filter unassigned vehicles to only show the reserved one */}
-                            <select
-                              className="w-full p-2 border rounded"
-                              value={selectedVehicle || ""}
-                              onChange={(e) => setSelectedVehicle(e.target.value)}
-                            >
-                              <option value="">Select the reserved vehicle</option>
-                              {unassignedVehicles
-                                  .filter(vehicle => vehicle.plate === selectedSlot.reserved_plate_number)
-                                  .map((vehicle) => (
+                          <h3 className="text-sm font-medium">
+                            Select Reserved Vehicle Entry
+                          </h3>
+                          {/* Filter unassigned vehicles to only show the reserved one */}
+                          <select
+                            className="w-full p-2 border rounded"
+                            value={selectedVehicle || ""}
+                            onChange={(e) => setSelectedVehicle(e.target.value)}
+                          >
+                            <option value="">
+                              Select the reserved vehicle
+                            </option>
+                            {unassignedVehicles
+                              .filter(
+                                (vehicle) =>
+                                  vehicle.plate ===
+                                  selectedSlot.reserved_plate_number
+                              )
+                              .map((vehicle) => (
                                 <option key={vehicle.id} value={vehicle.id}>
                                   {vehicle.plate} - {vehicle.type}
                                 </option>
                               ))}
-                            </select>
+                          </select>
                         </div>
-                          <DialogFooter>
-                            <Button variant="outline" onClick={() => setIsSlotDialogOpen(false)}>
-                              Cancel
-                            </Button>
-                            {/* Only enable assign if the correct vehicle is selected */}
-                            <Button onClick={assignParkingSlot} disabled={!selectedVehicle}>
-                              Assign Reserved Vehicle
-                            </Button>
-                          </DialogFooter>
+                        <DialogFooter>
+                          <Button
+                            variant="outline"
+                            onClick={() => setIsSlotDialogOpen(false)}
+                          >
+                            Cancel
+                          </Button>
+                          {/* Only enable assign if the correct vehicle is selected */}
+                          <Button
+                            onClick={assignParkingSlot}
+                            disabled={!selectedVehicle}
+                          >
+                            Assign Reserved Vehicle
+                          </Button>
+                        </DialogFooter>
                       </TabsContent>
-                        {/* Reserve tab content for changing or cancelling reservation */}
-                        <TabsContent value="reserve" className="space-y-4">
-                            <div className="space-y-2">
-                                <h3 className="text-sm font-medium">
-                                    Select New Customer or None
-                                </h3>
-                                <select
-                                    className="w-full p-2 border rounded"
-                                    value={selectedCustomer || ""}
-                                    onChange={(e) => setSelectedCustomer(e.target.value)}
-                                >
-                                    <option value="">None (Make Available)</option> {/* Option to make available */}
-                                    {registeredCustomers.map((customer) => (
-                                        <option key={customer.id} value={customer.id}>
-                                            {customer.display_name_with_plate || getCustomerDisplayName(customer)}
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
-                            <DialogFooter>
-                              <Button variant="outline" onClick={() => setIsSlotDialogOpen(false)}>
-                                Cancel
-                              </Button>
-                                {/* Button text changes based on selection */}
-                              <Button onClick={reserveParkingSlot}>
-                                  {selectedCustomer ? "Change Reservation" : "Make /Available"}
-                              </Button>
-                            </DialogFooter>
-                        </TabsContent>
+                      {/* Reserve tab content for changing or cancelling reservation */}
+                      <TabsContent value="reserve" className="space-y-4">
+                        <div className="space-y-2">
+                          <h3 className="text-sm font-medium">
+                            Select New Customer or None
+                          </h3>
+                          <select
+                            className="w-full p-2 border rounded"
+                            value={selectedCustomer || ""}
+                            onChange={(e) =>
+                              setSelectedCustomer(e.target.value)
+                            }
+                          >
+                            <option value="">None (Make Available)</option>{" "}
+                            {/* Option to make available */}
+                            {registeredCustomers.map((customer) => (
+                              <option key={customer.id} value={customer.id}>
+                                {customer.display_name_with_plate ||
+                                  getCustomerDisplayName(customer)}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <DialogFooter>
+                          <Button
+                            variant="outline"
+                            onClick={() => setIsSlotDialogOpen(false)}
+                          >
+                            Cancel
+                          </Button>
+                          {/* Button text changes based on selection */}
+                          <Button onClick={reserveParkingSlot}>
+                            {selectedCustomer
+                              ? "Change Reservation"
+                              : "Make /Available"}
+                          </Button>
+                        </DialogFooter>
+                      </TabsContent>
                     </Tabs>
                   </>
-                ) : selectedSlot.status === "occupied" || selectedSlot.current_vehicle_id ? (
+                ) : selectedSlot.status === "occupied" ||
+                  selectedSlot.current_vehicle_id ? (
                   // Show release option for occupied slots (keep existing logic)
-                  <>{console.log("🟢 Slot is available:", {
-                    status: selectedSlot.status,
-                    reserved_customer_name: selectedSlot.reserved_customer_name,
-                    reserved_plate_number: selectedSlot.reserved_plate_number
-                })}
+                  <>
+                    {console.log("🟢 Slot is available:", {
+                      status: selectedSlot.status,
+                      reserved_customer_name:
+                        selectedSlot.reserved_customer_name,
+                      reserved_plate_number: selectedSlot.reserved_plate_number,
+                    })}
                     <p>
                       This{" "}
                       {selectedSlot.section.includes("bike")
@@ -1762,7 +2056,6 @@ const handleSlotClick = useCallback(
                 ) : (
                   // Show assignment/reservation options for available slots (keep existing tabs)
                   <Tabs defaultValue="assign">
-                    
                     <TabsList className="grid w-full grid-cols-2">
                       <TabsTrigger value="assign">Assign Vehicle</TabsTrigger>
                       <TabsTrigger value="reserve">Reserve Slot</TabsTrigger>
@@ -1803,23 +2096,25 @@ const handleSlotClick = useCallback(
 
                     {/* Reserve Slot Tab Content (Modified for available slots) */}
                     <TabsContent value="reserve" className="space-y-4">
-                        <div className="space-y-2">
-                            <h3 className="text-sm font-medium">
-                                Select Registered Customer
-                            </h3>
-                            <select
-    className="w-full p-2 border rounded"
-    value={selectedCustomer || ""}
-    onChange={(e) => setSelectedCustomer(e.target.value)}
->
-    <option value="">Select a customer</option> {/* No "None" option when initially reserving */}
-    {registeredCustomers.map((customer) => (
-        <option key={customer.id} value={customer.id}>
-            {customer.display_name_with_plate || getCustomerDisplayName(customer)}
-        </option>
-    ))}
-</select>
-                        </div>
+                      <div className="space-y-2">
+                        <h3 className="text-sm font-medium">
+                          Select Registered Customer
+                        </h3>
+                        <select
+                          className="w-full p-2 border rounded"
+                          value={selectedCustomer || ""}
+                          onChange={(e) => setSelectedCustomer(e.target.value)}
+                        >
+                          <option value="">Select a customer</option>{" "}
+                          {/* No "None" option when initially reserving */}
+                          {registeredCustomers.map((customer) => (
+                            <option key={customer.id} value={customer.id}>
+                              {customer.display_name_with_plate ||
+                                getCustomerDisplayName(customer)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
 
                       <DialogFooter>
                         <Button
@@ -1828,7 +2123,9 @@ const handleSlotClick = useCallback(
                         >
                           Cancel
                         </Button>
-                        <Button onClick={reserveParkingSlot}> {/* Call the reserve function */}
+                        <Button onClick={reserveParkingSlot}>
+                          {" "}
+                          {/* Call the reserve function */}
                           Reserve Slot
                         </Button>
                       </DialogFooter>
@@ -1840,6 +2137,20 @@ const handleSlotClick = useCallback(
           </DialogContent>
         </Dialog>
       </div>
+      <Dialog open={showCapacityAlert} onOpenChange={setShowCapacityAlert}>
+        <DialogContent className="max-w-lg text-center space-y-4">
+          <DialogHeader>
+            <DialogTitle className="text-red-600 text-2xl">
+              ⚠️ Parking Alert
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-lg">{alertMessage}</p>
+          <p className="text-sm text-gray-500">
+            Please proceed with caution or consider redirecting the vehicle.
+          </p>
+          <Button onClick={() => setShowCapacityAlert(false)}>OK</Button>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

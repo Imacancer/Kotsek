@@ -36,6 +36,585 @@ def get_date_range(time_period):
     
     return start_date, end_date
 
+@analytics_bp.route('/weekly-summary', methods=['GET'])
+def weekly_summary():
+    """
+    Generate a comprehensive weekly summary report suitable for PDF export
+    Contains parking slot utilization, entrance/exit data, and customer analytics
+    
+    Query Parameters:
+    - start_date: Required start date in YYYY-MM-DD format.
+    - end_date: Required end date in YYYY-MM-DD format.
+    """
+    try:
+        # Parse start and end dates from query parameters
+        start_date_str = request.args.get('start_date')
+        end_date_str = request.args.get('end_date')
+        
+        # Validate that both dates are provided
+        if not start_date_str or not end_date_str:
+            return jsonify({'error': 'Both start_date and end_date are required'}), 400
+            
+        # Parse the dates
+        try:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59, microsecond=999)
+        except ValueError:
+            return jsonify({'error': 'Invalid date format. Please use YYYY-MM-DD'}), 400
+        
+        # Format dates for display
+        start_date_display = start_date.strftime('%B %d, %Y')
+        end_date_display = end_date.strftime('%B %d, %Y')
+        
+        # Initialize report structure
+        report = {
+            "report_title": f"Parking System Summary Report",
+            "date_range": {
+                "start_date": start_date_str,
+                "end_date": end_date_str,
+                "display_range": f"{start_date_display} - {end_date_display}"
+            },
+            "generated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC'),
+            "sections": []
+        }
+        
+        # -----------------------------------
+        # Section 1: Overall Traffic Summary
+        # -----------------------------------
+        
+        # Query for entries and exits during the selected period
+        total_entries = db.session.query(func.count(VehicleEntry.entry_id)).filter(
+            VehicleEntry.entry_time >= start_date,
+            VehicleEntry.entry_time <= end_date
+        ).scalar()
+        
+        total_exits = db.session.query(func.count(VehicleExit.exit_id)).filter(
+            VehicleExit.exit_time >= start_date,
+            VehicleExit.exit_time <= end_date
+        ).scalar()
+        
+        # Query for entries by vehicle type
+        entries_by_type = db.session.query(
+            VehicleEntry.vehicle_type, 
+            func.count(VehicleEntry.entry_id).label('count')
+        ).filter(
+            VehicleEntry.entry_time >= start_date,
+            VehicleEntry.entry_time <= end_date
+        ).group_by(
+            VehicleEntry.vehicle_type
+        ).all()
+        
+        # Calculate average parking duration for the period
+        avg_duration = db.session.query(
+            func.avg(ParkingSession.duration_minutes).label('avg_duration')
+        ).filter(
+            ParkingSession.start_time >= start_date,
+            ParkingSession.start_time <= end_date,
+            ParkingSession.duration_minutes.isnot(None)
+        ).scalar()
+        
+        # Format the average duration
+        avg_duration_formatted = "N/A"
+        if avg_duration:
+            hours = int(avg_duration // 60)
+            minutes = int(avg_duration % 60)
+            avg_duration_formatted = f"{hours}h {minutes}m"
+        
+        # Build the traffic summary section
+        traffic_summary = {
+            "section_title": "Traffic Overview",
+            "total_entries": total_entries,
+            "total_exits": total_exits,
+            "total_traffic": total_entries + total_exits,
+            "vehicle_type_distribution": {vt: count for vt, count in entries_by_type},
+            "average_parking_duration": {
+                "minutes": round(avg_duration) if avg_duration else 0,
+                "formatted": avg_duration_formatted
+            }
+        }
+        
+        report["sections"].append(traffic_summary)
+        
+        # -----------------------------------
+        # Section 2: Daily Traffic Breakdown
+        # -----------------------------------
+        
+        # Calculate the number of days in the selected range
+        days_delta = (end_date.date() - start_date.date()).days + 1
+        
+        # Prepare a structure for all days in the selected range
+        days_of_week = []
+        daily_data = {}
+        
+        # Create a list of all dates in the range and initialize data structures
+        for i in range(days_delta):
+            current_date = start_date.date() + timedelta(days=i)
+            day_str = current_date.strftime('%Y-%m-%d')
+            day_name = current_date.strftime('%A')
+            
+            days_of_week.append({
+                'date': day_str,
+                'day_name': day_name
+            })
+            
+            daily_data[day_str] = {
+                'entries': 0,
+                'exits': 0,
+                'day_name': day_name
+            }
+        
+        # Query for entries grouped by date
+        entries_by_date = db.session.query(
+            func.date(VehicleEntry.entry_time).label('date'),
+            func.count(VehicleEntry.entry_id).label('count')
+        ).filter(
+            VehicleEntry.entry_time >= start_date,
+            VehicleEntry.entry_time <= end_date
+        ).group_by('date').all()
+        
+        # Query for exits grouped by date
+        exits_by_date = db.session.query(
+            func.date(VehicleExit.exit_time).label('date'),
+            func.count(VehicleExit.exit_id).label('count')
+        ).filter(
+            VehicleExit.exit_time >= start_date,
+            VehicleExit.exit_time <= end_date
+        ).group_by('date').all()
+        
+        # Update the entries data
+        for date_obj, count in entries_by_date:
+            date_str = date_obj.strftime('%Y-%m-%d')
+            if date_str in daily_data:
+                daily_data[date_str]['entries'] = count
+        
+        # Update the exits data
+        for date_obj, count in exits_by_date:
+            date_str = date_obj.strftime('%Y-%m-%d')
+            if date_str in daily_data:
+                daily_data[date_str]['exits'] = count
+        
+        # Format the results for the report
+        daily_traffic = []
+        for day_info in days_of_week:
+            date_str = day_info['date']
+            data = daily_data[date_str]
+            daily_traffic.append({
+                'date': date_str,
+                'day_name': day_info['day_name'],
+                'entries': data['entries'],
+                'exits': data['exits'],
+                'total': data['entries'] + data['exits']
+            })
+        
+        # Find the busiest day
+        busiest_day = max(daily_traffic, key=lambda x: x['total']) if daily_traffic else None
+        
+        # Build the daily breakdown section
+        daily_breakdown = {
+            "section_title": "Daily Traffic Breakdown",
+            "daily_data": daily_traffic,
+            "busiest_day": busiest_day
+        }
+        
+        report["sections"].append(daily_breakdown)
+        
+        # -----------------------------------
+        # Section 3: Hourly Traffic Patterns
+        # -----------------------------------
+        
+        # Query for hourly entries
+        hourly_entries = db.session.query(
+            extract('hour', VehicleEntry.entry_time).label('hour'),
+            func.count(VehicleEntry.entry_id).label('count')
+        ).filter(
+            VehicleEntry.entry_time >= start_date,
+            VehicleEntry.entry_time <= end_date
+        ).group_by('hour').order_by('hour').all()
+        
+        # Query for hourly exits
+        hourly_exits = db.session.query(
+            extract('hour', VehicleExit.exit_time).label('hour'),
+            func.count(VehicleExit.exit_id).label('count')
+        ).filter(
+            VehicleExit.exit_time >= start_date,
+            VehicleExit.exit_time <= end_date
+        ).group_by('hour').order_by('hour').all()
+        
+        # Format hourly data for all hours of the day (0-23)
+        hourly_traffic = []
+        for hour in range(24):
+            entry_count = next((count for h, count in hourly_entries if int(h) == hour), 0)
+            exit_count = next((count for h, count in hourly_exits if int(h) == hour), 0)
+            
+            hourly_traffic.append({
+                'hour': hour,
+                'hour_display': f"{hour:02d}:00 - {hour:02d}:59",
+                'entries': entry_count,
+                'exits': exit_count,
+                'total': entry_count + exit_count
+            })
+        
+        # Find peak hours
+        peak_entry_hour = max(hourly_traffic, key=lambda x: x['entries']) if hourly_traffic else None
+        peak_exit_hour = max(hourly_traffic, key=lambda x: x['exits']) if hourly_traffic else None
+        
+        # Build the hourly patterns section
+        hourly_patterns = {
+            "section_title": "Hourly Traffic Patterns",
+            "hourly_data": hourly_traffic,
+            "peak_entry_hour": peak_entry_hour,
+            "peak_exit_hour": peak_exit_hour
+        }
+        
+        report["sections"].append(hourly_patterns)
+        
+        # -----------------------------------
+        # Section 4: Parking Slot Utilization
+        # -----------------------------------
+        
+        # Query for total hours of slot usage during the period
+        slot_usage = db.session.query(
+            ParkingSlot.slot_id,
+            ParkingSlot.slot_number,
+            ParkingSlot.section,
+            ParkingLot.name.label('lot_name'),
+            func.sum(ParkingSession.duration_minutes).label('total_minutes')
+        ).join(
+            ParkingSession, ParkingSession.slot_id == ParkingSlot.slot_id
+        ).join(
+            ParkingLot, ParkingLot.lot_id == ParkingSlot.lot_id
+        ).filter(
+            ParkingSession.start_time >= start_date,
+            ParkingSession.start_time <= end_date,
+            ParkingSession.duration_minutes.isnot(None)
+        ).group_by(
+            ParkingSlot.slot_id,
+            ParkingSlot.slot_number,
+            ParkingSlot.section,
+            ParkingLot.name
+        ).order_by(desc('total_minutes')).limit(10).all()
+        
+        # Format the slot usage data
+        top_slots = []
+        for row in slot_usage:
+            minutes = row.total_minutes or 0
+            hours = round(minutes / 60, 2)
+            
+            # Format duration
+            if minutes < 60:
+                formatted_duration = f"{minutes} minutes"
+            else:
+                hours_int = int(minutes // 60)
+                mins_int = int(minutes % 60)
+                formatted_duration = f"{hours_int}h {mins_int}m"
+            
+            top_slots.append({
+                'slot_id': str(row.slot_id),
+                'slot_number': row.slot_number,
+                'section': row.section,
+                'lot_name': row.lot_name,
+                'total_hours': hours,
+                'total_minutes': minutes,
+                'formatted_duration': formatted_duration
+            })
+        
+        # Get section usage statistics
+        section_usage = db.session.query(
+            ParkingSlot.section,
+            ParkingLot.name.label('lot_name'),
+            func.sum(ParkingSession.duration_minutes).label('total_minutes'),
+            func.count(ParkingSession.session_id).label('session_count')
+        ).join(
+            ParkingSession, ParkingSession.slot_id == ParkingSlot.slot_id
+        ).join(
+            ParkingLot, ParkingLot.lot_id == ParkingSlot.lot_id
+        ).filter(
+            ParkingSession.start_time >= start_date,
+            ParkingSession.start_time <= end_date
+        ).group_by(
+            ParkingSlot.section,
+            ParkingLot.name
+        ).order_by(desc('total_minutes')).all()
+        
+        # Format section usage data
+        section_stats = []
+        for row in section_usage:
+            minutes = row.total_minutes or 0
+            hours = round(minutes / 60, 2)
+            
+            section_stats.append({
+                'section': row.section,
+                'lot_name': row.lot_name,
+                'total_hours': hours,
+                'session_count': row.session_count,
+                'formatted_duration': format_duration(minutes)
+            })
+        
+        # Build the slot utilization section
+        slot_utilization = {
+            "section_title": "Parking Slot Utilization",
+            "top_utilized_slots": top_slots,
+            "section_statistics": section_stats
+        }
+        
+        report["sections"].append(slot_utilization)
+        
+        # -----------------------------------
+        # Section 5: Customer Analytics
+        # -----------------------------------
+        
+        # Query for top customers during the period
+        top_customers = db.session.query(
+            ParkingCustomer.customer_id,
+            ParkingCustomer.first_name,
+            ParkingCustomer.last_name,
+            ParkingCustomer.vehicle_type,
+            func.count(ParkingSession.session_id).label('visit_count'),
+            func.sum(ParkingSession.duration_minutes).label('total_minutes')
+        ).join(
+            ParkingSession, ParkingSession.customer_id == ParkingCustomer.customer_id
+        ).filter(
+            ParkingSession.start_time >= start_date,
+            ParkingSession.start_time <= end_date
+        ).group_by(
+            ParkingCustomer.customer_id,
+            ParkingCustomer.first_name,
+            ParkingCustomer.last_name,
+            ParkingCustomer.vehicle_type
+        ).order_by(desc('visit_count')).limit(10).all()
+        
+        # Format top customers data
+        top_customer_data = []
+        for cust in top_customers:
+            minutes = cust.total_minutes or 0
+            
+            top_customer_data.append({
+                'customer_id': str(cust.customer_id),
+                'name': f"{cust.first_name} {cust.last_name}",
+                'vehicle_type': cust.vehicle_type,
+                'visits': cust.visit_count,
+                'total_parking_time': {
+                    'minutes': minutes,
+                    'hours': round(minutes / 60, 2),
+                    'formatted': format_duration(minutes)
+                }
+            })
+        
+        # Query for favorite parking spots of top customers
+        customer_favorite_spots = []
+        
+        for cust in top_customers[:5]:  # Limit to top 5 for report brevity
+            favorite_spots = db.session.query(
+                ParkingSlot.slot_id,
+                ParkingSlot.slot_number,
+                ParkingSlot.section,
+                ParkingLot.name.label('lot_name'),
+                func.count(ParkingSession.session_id).label('usage_count')
+            ).join(
+                ParkingSession, ParkingSession.slot_id == ParkingSlot.slot_id
+            ).join(
+                ParkingLot, ParkingLot.lot_id == ParkingSlot.lot_id
+            ).filter(
+                ParkingSession.customer_id == cust.customer_id,
+                ParkingSession.start_time >= start_date,
+                ParkingSession.start_time <= end_date
+            ).group_by(
+                ParkingSlot.slot_id,
+                ParkingSlot.slot_number,
+                ParkingSlot.section,
+                ParkingLot.name
+            ).order_by(desc('usage_count')).limit(3).all()
+            
+            spots = [
+                {
+                    'slot_number': spot.slot_number,
+                    'section': spot.section,
+                    'lot_name': spot.lot_name,
+                    'usage_count': spot.usage_count
+                } for spot in favorite_spots
+            ]
+            
+            if spots:
+                customer_favorite_spots.append({
+                    'customer_id': str(cust.customer_id),
+                    'name': f"{cust.first_name} {cust.last_name}",
+                    'favorite_spots': spots
+                })
+        
+        # Build the customer analytics section
+        customer_analytics = {
+            "section_title": "Customer Analytics",
+            "top_customers": top_customer_data,
+            "customer_favorite_spots": customer_favorite_spots
+        }
+        
+        report["sections"].append(customer_analytics)
+        
+        # -----------------------------------
+        # Section 6: Duration Distribution
+        # -----------------------------------
+        
+        # Set up duration ranges
+        duration_ranges = [
+            ('< 30 min', 0, 30),
+            ('30-60 min', 30, 60),
+            ('1-2 hours', 60, 120),
+            ('2-4 hours', 120, 240),
+            ('4-8 hours', 240, 480),
+            ('> 8 hours', 480, None)
+        ]
+        
+        # Query for duration distribution
+        duration_dist = {}
+        for label, min_val, max_val in duration_ranges:
+            if max_val is None:
+                # For the last range (> 8 hours)
+                count = db.session.query(func.count(ParkingSession.session_id)).filter(
+                    ParkingSession.duration_minutes >= min_val,
+                    ParkingSession.start_time >= start_date,
+                    ParkingSession.start_time <= end_date
+                ).scalar()
+            else:
+                count = db.session.query(func.count(ParkingSession.session_id)).filter(
+                    ParkingSession.duration_minutes >= min_val,
+                    ParkingSession.duration_minutes < max_val,
+                    ParkingSession.start_time >= start_date,
+                    ParkingSession.start_time <= end_date
+                ).scalar()
+            duration_dist[label] = count
+        
+        # Build the duration distribution section
+        duration_analysis = {
+            "section_title": "Parking Duration Analysis",
+            "duration_distribution": duration_dist
+        }
+        
+        report["sections"].append(duration_analysis)
+        
+        return jsonify(report), 200
+        
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
+
+@analytics_bp.route('/traffic/current-week', methods=['GET'])
+def current_week_traffic():
+    """
+    Get traffic data specifically for the current week with data for each day
+    Returns entries and exits for each day in the current week
+    """
+    try:
+        # Get the current date
+        today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        # Calculate the start date (Sunday) of the current week
+        # Python's weekday() returns 0 for Monday, so we adjust to get Sunday
+        start_date = today - timedelta(days=(today.weekday() + 1) % 7)
+        
+        # The end date is 7 days after the start date
+        end_date = start_date + timedelta(days=7)
+        
+        # Prepare a structure for all days of the week
+        days_of_week = []
+        daily_data = {}
+        
+        # Create a list of all dates in this week and initialize data structures
+        for i in range(7):
+            current_date = start_date + timedelta(days=i)
+            day_str = current_date.strftime('%Y-%m-%d')
+            day_name = current_date.strftime('%A')
+            display_date = current_date.strftime('%m/%d')
+            
+            days_of_week.append({
+                'date': day_str,
+                'day_name': day_name,
+                'display_date': display_date
+            })
+            
+            daily_data[day_str] = {
+                'entries': 0,
+                'exits': 0,
+                'display_date': display_date,
+                'day_name': day_name
+            }
+        
+        # Query for entries grouped by date
+        entries_by_date = db.session.query(
+            func.date(VehicleEntry.entry_time).label('date'),
+            func.count(VehicleEntry.entry_id).label('count')
+        ).filter(
+            VehicleEntry.entry_time >= start_date,
+            VehicleEntry.entry_time < end_date
+        ).group_by('date').all()
+        
+        # Query for exits grouped by date
+        exits_by_date = db.session.query(
+            func.date(VehicleExit.exit_time).label('date'),
+            func.count(VehicleExit.exit_id).label('count')
+        ).filter(
+            VehicleExit.exit_time >= start_date,
+            VehicleExit.exit_time < end_date
+        ).group_by('date').all()
+        
+        # Query for entries by vehicle type
+        entries_by_type = db.session.query(
+            VehicleEntry.vehicle_type, 
+            func.count(VehicleEntry.entry_id).label('count')
+        ).filter(
+            VehicleEntry.entry_time >= start_date,
+            VehicleEntry.entry_time < end_date
+        ).group_by(
+            VehicleEntry.vehicle_type
+        ).all()
+        
+        # Update the entries data
+        for date_obj, count in entries_by_date:
+            date_str = date_obj.strftime('%Y-%m-%d')
+            if date_str in daily_data:
+                daily_data[date_str]['entries'] = count
+        
+        # Update the exits data
+        for date_obj, count in exits_by_date:
+            date_str = date_obj.strftime('%Y-%m-%d')
+            if date_str in daily_data:
+                daily_data[date_str]['exits'] = count
+        
+        # Format the results for the API response
+        formatted_data = []
+        for day_info in days_of_week:
+            date_str = day_info['date']
+            data = daily_data[date_str]
+            formatted_data.append({
+                'date': date_str,
+                'day': day_info['day_name'],
+                'display_date': data['display_date'],
+                'entries': data['entries'],
+                'exits': data['exits'],
+                'total': data['entries'] + data['exits']
+            })
+        
+        # Build the response
+        result = {
+            'time_period': 'current_week',
+            'date_range': {
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': (end_date - timedelta(days=1)).strftime('%Y-%m-%d')  # End date minus 1 day for the actual end of week
+            },
+            'days_of_week': days_of_week,
+            'traffic_data': formatted_data,
+            'entries_by_type': {vt: count for vt, count in entries_by_type},
+            'summary': {
+                'total_entries': sum(data['entries'] for data in formatted_data),
+                'total_exits': sum(data['exits'] for data in formatted_data)
+            }
+        }
+        
+        return jsonify(result), 200
+        
+    except Exception as e:
+        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
+
 # Vehicle Traffic Analytics
 @analytics_bp.route('/traffic/<time_period>', methods=['GET'])
 def traffic_analytics(time_period):

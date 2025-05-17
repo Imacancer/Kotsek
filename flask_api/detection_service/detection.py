@@ -1000,6 +1000,7 @@ class EntryVideoProcessor:
         # Create SQLAlchemy engine for when we need a session outside Flask context
         self.engine = create_engine(DATABASE_URL)
         self.active_guard_id = None
+        self.has_captured_big_frame = False
 
 
 
@@ -1412,7 +1413,7 @@ class EntryVideoProcessor:
             frame = cv2.resize(frame, size)
         original_frame = frame.copy()  # Clean version for screenshot
         best_plate_frame = None
-
+        big_frame = None
         results = self.model.track(frame, persist=True, conf=0.5, iou=0.5)
         detections = []
 
@@ -1422,10 +1423,8 @@ class EntryVideoProcessor:
         # Draw plate detection boundary
         cv2.line(frame, (plate_line_x, 0), (plate_line_x, frame.shape[0]), (0, 255, 0), 2)
 
-        moto_line_x = 640 if isinstance(self, EntryVideoProcessor) else 220
+        moto_line_x = 590 if isinstance(self, EntryVideoProcessor) else 220
         cv2.line(frame, (moto_line_x, 0), (moto_line_x, frame.shape[0]), (0, 0, 255), 2)
-        cv2.putText(frame, "Motorcycle Line", (moto_line_x + 10, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
         cv2.putText(frame, "Plate Detection Boundary", (plate_line_x + 10, 60), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
@@ -1529,16 +1528,28 @@ class EntryVideoProcessor:
                 mean_bgr = cv2.cvtColor(mean_hsv_uint8, cv2.COLOR_HSV2BGR)[0][0]
                 hex_color = '#{:02x}{:02x}{:02x}'.format(int(mean_bgr[2]), int(mean_bgr[1]), int(mean_bgr[0]))
                 #screenshot safe
-                if isinstance(best_plate_frame, np.ndarray) and best_plate_frame.size > 0:
-                    safe_screenshot = best_plate_frame.copy()
-                elif isinstance(original_frame, np.ndarray) and original_frame.size > 0:
-                    safe_screenshot = original_frame.copy()
+                # print(f'has captured: {self.has_captured_big_frame}')
+                # if not self.has_captured_big_frame and x2 > moto_line_x:
+                #     big_frame = frame.copy()
+                #     self.has_captured_big_frame = True  # ✅ prevent future captures
+                #     print("✅ Captured big_frame")
+                #     print("Captured frame shape:", frame.shape)
+                #     print("Captured frame mean pixel value:", np.mean(frame))
+                #     print("Min pixel value:", big_frame.min())
+                #     print("Max pixel value:", big_frame.max())
+
+                if not self.has_captured_big_frame and x2 > moto_line_x:
+                    big_frame=frame.copy()
+                    original_frame = big_frame.copy()
+                    self.has_captured_big_frame = True
+                if isinstance(big_frame, np.ndarray) and big_frame.size > 0:
+                    print("BIGFRAMEEEEEEE")
+                    screenshot_to_save = big_frame
                 else:
-                    print("❌ No valid frame available, using dummy fallback image")
-                    safe_screenshot = np.zeros((10, 10, 3), dtype=np.uint8)  # fallback
-                                # Check if crossed
+                    print("BADFRAMEEEEE")
+                    screenshot_to_save=original_frame.copy()
                 # Check if crossed
-                if x2 > plate_line_x and track_id not in self.crossed_ids:
+                if x2 > moto_line_x and track_id not in self.crossed_ids:
                     self.crossed_ids.add(track_id)
                     self.class_counts[label] += 1
 
@@ -1560,7 +1571,7 @@ class EntryVideoProcessor:
                         "plate_confidence": best_plate["confidence"] if best_plate else 0,
                         "timestamp": timestamp,
                         "color": hex_color,
-                        "screenshot": safe_screenshot
+                        "screenshot": screenshot_to_save
                         ,"direction":direction if direction else "undetermined"
                     }
 
@@ -1689,6 +1700,7 @@ class EntryVideoProcessor:
 
         # Annotate frame
         annotated_frame = frame.copy()
+
         for box, track_id, confidence, class_idx in zip(filtered_boxes, filtered_track_ids, filtered_confidences, filtered_class_indices):
             x1, y1, x2, y2 = map(int, box)
             label = self.model.names[int(class_idx)]
@@ -1706,6 +1718,24 @@ class EntryVideoProcessor:
         cv2.line(annotated_frame, (plate_line_x, 0), (plate_line_x, frame.shape[0]), (0, 255, 0), 2)
         cv2.putText(annotated_frame, "Plate Detection Boundary", (plate_line_x + 10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        # if not self.has_captured_big_frame and x2 > moto_line_x:
+        #     big_frame = annotated_frame.copy()
+        #     self.has_captured_big_frame = True
+        #     print("✅ Captured big_frame")
+        #     print("Captured frame shape:", big_frame.shape)
+        #     print("Captured frame mean pixel value:", np.mean(big_frame))
+        #     print("Min pixel value:", big_frame.min())
+        #     print("Max pixel value:", big_frame.max())
+        # if isinstance(big_frame, np.ndarray):
+        #     print("big_frame.mean:", np.mean(big_frame))
+        #     print("frame.mean:", np.mean(frame))
+        #     print("annotated_frame.mean:", np.mean(annotated_frame))
+        #     print("big_frame.mean:", np.mean(big_frame))
+
+        #     print("Is big_frame identical to annotated_frame?", np.array_equal(big_frame, annotated_frame))
+        #     print("Is big_frame identical to frame?", np.array_equal(big_frame, frame))
+        # else:
+        #     print("⚠️ big_frame is not a valid image:", big_frame)
 
         return annotated_frame, detections
    

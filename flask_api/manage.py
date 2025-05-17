@@ -7,6 +7,7 @@ from controllers.unassigned import vehicle_bp
 from controllers.assign_guard import guard_bp
 from controllers.parking_lot import parking_bp
 from controllers.tungtungtungsahur import analytics_bp
+from controllers.customer_mgmt import customer_bp 
 import os 
 from dotenv import load_dotenv
 from db.db import init_db, db  # Import the init_db function and db instance
@@ -40,6 +41,7 @@ def create_app():
     app.register_blueprint(guard_bp)
     app.register_blueprint(parking_bp)
     app.register_blueprint(analytics_bp, url_prefix='/analytics')
+    app.register_blueprint(customer_bp)
 
     init_jwt(app)
 
@@ -56,8 +58,8 @@ def create_app():
 
     video_path_exit = "./sample/2exitnew.mp4"  # Update path as necessary
     video_path_entry = "./sample/1entrynew.mp4"
-    entry_video_processor = EntryVideoProcessor(socketio, cctv) 
-    exit_video_processor = VideoProcessor(socketio, cctv)
+    entry_video_processor = EntryVideoProcessor(socketio, video_path_entry) 
+    exit_video_processor = VideoProcessor(socketio, video_path_exit)
     app.entry_video_processor = entry_video_processor
     app.exit_video_processor = exit_video_processor
 
