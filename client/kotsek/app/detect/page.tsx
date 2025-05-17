@@ -55,7 +55,7 @@ interface Detection {
   plates: PlateDetection[];
 }
 
-interface User {
+export interface User {
   id: string; // Should be string to match backend UUID
   email: string;
   username?: string; // Keep if applicable
@@ -126,7 +126,38 @@ const getCustomerDisplayName = (customer: User): string => {
   }
   return customer.username || customer.email || customer.id; // Fallback display
 };
+
 const SurveillanceInterface = () => {
+  const [showCapacityAlert, setShowCapacityAlert] = useState(false);
+  const [alertMessage, setAlertMessage] = useState("");
+  const lastAlertedVehicleType = useRef<string | null>(null);
+  const checkParkingCapacityAlert = () => {
+    const type = entryDetectionData.vehicleType.toLowerCase();
+    let total = 0;
+    let occupied = 0;
+
+    if (type.includes("motorcycle")) {
+      total = motorcycleData.length;
+      occupied = motorcycleData.filter((s) => s.status === "occupied").length;
+    } else if (type.includes("bike")) {
+      total = bicycleData.length;
+      occupied = bicycleData.filter((s) => s.status === "occupied").length;
+    } else if (type.includes("car")) {
+      total = allParkingSlots.length;
+      occupied = allParkingSlots.filter((s) => s.status === "occupied").length;
+    }
+
+    const percent = (occupied / total) * 100;
+    if (percent >= 95) {
+      setAlertMessage(
+        `The ${entryDetectionData.vehicleType} slots are ${percent.toFixed(
+          0
+        )}% full`
+      );
+      setShowCapacityAlert(true);
+    }
+  };
+
   const entryVideoRef = useRef<HTMLImageElement | null>(null);
   const exitVideoRef = useRef<HTMLImageElement | null>(null);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -153,6 +184,7 @@ const SurveillanceInterface = () => {
       if (socket.current) socket.current.disconnect();
     };
   }, []);
+
   const [entryEnabled, setEntryEnabled] = useState(false);
   const [exitEnabled, setExitEnabled] = useState(false);
   const [motorcycleData, setMotorcycleData] = useState<ParkingSlot[]>([]);
@@ -208,12 +240,16 @@ const SurveillanceInterface = () => {
       annotationLabel: 0,
     });
   // Add these new state variables for reservation
+
   const [registeredCustomers, setRegisteredCustomers] = useState<User[]>(
     [] as User[]
   );
   const [selectedCustomer, setSelectedCustomer] = useState<string | null>(
     null as string | null
   );
+  const [searchPlate, setSearchPlate] = useState<string>("");
+  const normalizePlate = (plate: string) =>
+    plate.toLowerCase().replace(/\s/g, "");
   // To store the ID (UUID) of the selected customer
   const fetchGuards = async () => {
     try {
@@ -273,7 +309,6 @@ const SurveillanceInterface = () => {
       }
     }
   };
-
   // Add a function to set the active guard
   const handleSetActiveGuard = async () => {
     try {
@@ -658,7 +693,7 @@ const SurveillanceInterface = () => {
       if (!lotNumber) {
         if (selectedSlot.section === "bike area left") {
           lotNumber = "PE1_Bike";
-        } else if (selectedSlot.section === "bike arearight") {
+        } else if (selectedSlot.section === "bike area right") {
           lotNumber = "PE2_Bike";
         } else if (selectedSlot.section === "elevated parking") {
           lotNumber = "Elevated_MCP";
@@ -742,16 +777,20 @@ const SurveillanceInterface = () => {
     }
 
     // Determine the API endpoint and data based on whether a customer is selected
-    const isCancellingReservation = selectedCustomer === ""; // Check if "None" is selected
+    const isCancellingReservation = selectedCustomer === null; // Check if "None" is selected
     const apiEndpoint = isCancellingReservation
       ? `${SERVER_URL}/parking/release-slot`
       : `${SERVER_URL}/parking/reserve-slot`;
     const requestData: any = {
       slot_number: selectedSlot.slot_number.toString(), // Sending slot_number as slot_id
+      section: selectedSlot.section,
       slot_section: selectedSlot.section,
       lot_id: lotNumber, // Pass the determined lotNumber
     };
-
+    console.log(
+      `selected customer? : ${isCancellingReservation}${selectedCustomer}`
+    );
+    console.log("UUID:", selectedSlot.id);
     if (isCancellingReservation) {
       // For releasing a reservation, send slot identifier
       requestData.id = selectedSlot.id; // Send the slot UUID for release
@@ -1027,6 +1066,92 @@ const SurveillanceInterface = () => {
     ...(parkingDataCenter || []),
     ...(parkingDataTop || []),
   ];
+  useEffect(() => {
+    const type = entryDetectionData.vehicleType?.toLowerCase();
+    if (!entryEnabled || !type || type === "no detection") {
+      console.log("🚫 Skipping: entry not enabled or invalid type:", type);
+      return;
+    }
+
+    if (lastAlertedVehicleType.current?.toLowerCase() === type) {
+      console.log(`🟡 Skipping alert: already shown for ${type}`);
+      return;
+    }
+
+    const isCar = type.includes("car");
+    const isMotor = type.includes("motorcycle");
+    const isBike = type.includes("bicycle");
+
+    const carOccupied = allParkingSlots.filter(
+      (slot) => slot.status === "occupied"
+    ).length;
+    const carTotal = allParkingSlots.length;
+    const carPercent = (carOccupied / carTotal) * 100;
+
+    const motorOccupied = motorcycleData.filter(
+      (slot) => slot.status === "occupied"
+    ).length;
+    const motorTotal = motorcycleData.length;
+    const motorPercent = (motorOccupied / motorTotal) * 100;
+
+    const bikeOccupied = bicycleData.filter(
+      (slot) => slot.status === "occupied"
+    ).length;
+    const bikeTotal = bicycleData.length;
+    const bikePercent = (bikeOccupied / bikeTotal) * 100;
+
+    console.log(
+      `🔍 Capacity Check: type=${type}, car=${carPercent}%, motor=${motorPercent}%, bike=${bikePercent}%`
+    );
+
+    if (isCar && carPercent >= 90) {
+      setTimeout(() => {
+        setAlertMessage(`The car slots are ${Math.round(carPercent)}% full.`);
+        setShowCapacityAlert(true);
+      }, 2000);
+      lastAlertedVehicleType.current = type;
+      console.log("🚨 Triggered alert for car");
+    } else if (isMotor && motorPercent >= 95) {
+      setTimeout(() => {
+        setAlertMessage(
+          `The motorcycle slots are ${Math.round(motorPercent)}% full.`
+        );
+        setShowCapacityAlert(true);
+      }, 2000);
+      lastAlertedVehicleType.current = type;
+      console.log("🚨 Triggered alert for motorcycle");
+    } else if (isBike && bikePercent >= 95) {
+      setTimeout(() => {
+        setAlertMessage(
+          `The bicycle slots are ${Math.round(bikePercent)}% full.`
+        );
+        setShowCapacityAlert(true);
+      }, 2000);
+      lastAlertedVehicleType.current = type;
+      console.log("🚨 Triggered alert for bicycle");
+    }
+  }, [
+    entryEnabled,
+    entryDetectionData.vehicleType,
+    allParkingSlots,
+    motorcycleData,
+    bicycleData,
+  ]);
+
+  useEffect(() => {
+    if (!entryEnabled) return;
+
+    const type = entryDetectionData.vehicleType?.toLowerCase();
+
+    if (
+      lastAlertedVehicleType.current &&
+      type !== lastAlertedVehicleType.current?.toLowerCase()
+    ) {
+      console.log("🔄 Resetting alert cache for new vehicle type:", type);
+      lastAlertedVehicleType.current = null;
+    }
+  }, [entryDetectionData.vehicleType, entryEnabled]);
+
   const totalSpaces = allParkingSlots.length;
   const occupiedSpaces = allParkingSlots.filter(
     (slot) => slot.status === "occupied"
@@ -1331,6 +1456,15 @@ const SurveillanceInterface = () => {
                   .join(", ") || "",
               annotationLabel: parseInt(mostConfidentDetection.label),
             });
+            if (mostConfidentDetection.label === "bicycle") {
+              setEntryDetectionData({
+                vehicleType: mostConfidentDetection.label,
+                plateNumber: "No Plate",
+                colorAnnotation: mostConfidentDetection?.color_annotation,
+                ocrText: "No Plate",
+                annotationLabel: parseInt(mostConfidentDetection.label),
+              });
+            }
           } else {
             setEntryDetectionData({
               vehicleType: "No detection",
@@ -1398,6 +1532,7 @@ const SurveillanceInterface = () => {
                 socket.current?.emit("stop_entry_video");
                 setEntryEnabled(false);
               } else {
+                lastAlertedVehicleType.current = null;
                 if (!socket.current || !socket.current.connected) {
                   socket.current = io(SERVER_URL, {
                     reconnection: true,
@@ -1491,6 +1626,7 @@ const SurveillanceInterface = () => {
                 socket.current?.emit("stop_exit_video");
                 setExitEnabled(false);
               } else {
+                lastAlertedVehicleType.current = null;
                 if (!socket.current || !socket.current.connected) {
                   socket.current = io(SERVER_URL, {
                     reconnection: true,
@@ -1542,7 +1678,7 @@ const SurveillanceInterface = () => {
                             mostConfidentDetection?.color_annotation,
                           ocrText:
                             mostConfidentDetection.plates
-                              ?.map((plate) => plate.ocr_text)
+                              .map((plate) => plate.ocr_text)
                               .join(", ") || "",
                           annotationLabel: parseInt(
                             mostConfidentDetection.label
@@ -1671,6 +1807,19 @@ const SurveillanceInterface = () => {
         </div>
         <UnassignedVehiclesTable />
         {/* Parking Slots Section - Now Full Width below entry stream */}
+        <div className="flex items-center space-x-4 mt-6">
+          <input
+            type="text"
+            placeholder="Search plate number..."
+            className="p-2 border rounded w-[300px]"
+            value={searchPlate}
+            onChange={(e) => setSearchPlate(e.target.value)}
+          />
+          <span className="text-sm text-gray-500">
+            Enter plate number to highlight the slot
+          </span>
+        </div>
+
         <Card className="w-full mt-6">
           <CardHeader>
             <CardTitle>Parking Slots Overview</CardTitle>
@@ -1692,6 +1841,8 @@ const SurveillanceInterface = () => {
                 reservedSpaces={reservedSpaces}
                 capacityStatus={capacityStatus}
                 onSlotClick={handleSlotClick}
+                registeredCustomers={registeredCustomers}
+                searchPlate={searchPlate}
               />
             </div>
           </CardContent>
@@ -1986,6 +2137,20 @@ const SurveillanceInterface = () => {
           </DialogContent>
         </Dialog>
       </div>
+      <Dialog open={showCapacityAlert} onOpenChange={setShowCapacityAlert}>
+        <DialogContent className="max-w-lg text-center space-y-4">
+          <DialogHeader>
+            <DialogTitle className="text-red-600 text-2xl">
+              ⚠️ Parking Alert
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-lg">{alertMessage}</p>
+          <p className="text-sm text-gray-500">
+            Please proceed with caution or consider redirecting the vehicle.
+          </p>
+          <Button onClick={() => setShowCapacityAlert(false)}>OK</Button>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
