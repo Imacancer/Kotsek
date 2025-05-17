@@ -45,7 +45,7 @@ def set_active_guard():
 @guard_bp.route('/guard/active-guard', methods=['GET'])
 def get_active_guard():
     try:
-        guard_id = current_app.video_processor.active_guard_id
+        guard_id = current_app.entry_video_processor.active_guard_id
         if not guard_id:
             return jsonify({
                 "active_guard": None

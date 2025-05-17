@@ -17,7 +17,7 @@ paddleocr
 paddlepaddle
 psycopg2-binary
 eventlet
-
+lap==0.5.12
 # Put this just before torch packages:
 --extra-index-url https://download.pytorch.org/whl/cu121
 torch
