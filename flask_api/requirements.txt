@@ -13,8 +13,8 @@ requests
 Werkzeug
 supabase
 flask-jwt-extended
-paddleocr
-paddlepaddle
+paddleocr==2.9.1
+paddlepaddle==2.6.2
 psycopg2-binary
 eventlet
 pandas
