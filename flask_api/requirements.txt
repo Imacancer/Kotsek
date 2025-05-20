@@ -17,7 +17,12 @@ paddleocr
 paddlepaddle
 psycopg2-binary
 eventlet
-lap==0.5.12
+pandas
+numpy
+scikit-learn
+sendgrid
+redis
+
 
 # Put this just before torch packages:
 --extra-index-url https://download.pytorch.org/whl/cu121
