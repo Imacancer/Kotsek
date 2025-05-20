@@ -16,4 +16,5 @@ train.py
 *.mp4
 anti.py
 flask_api/Dockerfile
+redis_setup_windows.txt
 
