@@ -101,7 +101,7 @@ def send_congrats_email(to_email, name, plate, vehicle):
     subject = "Welcome to KoTsek Parking"
     body = f"""Hi {name},
 
-Good Day! You are now a registered parking user.
+Congratulations! You are now a registered parking user.
 
 Your vehicle:
 Plate Number: {plate}
