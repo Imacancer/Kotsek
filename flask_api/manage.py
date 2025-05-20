@@ -10,6 +10,8 @@ from controllers.assign_guard import guard_bp
 from controllers.parking_lot import parking_bp
 from controllers.tungtungtungsahur import analytics_bp
 from controllers.customer_mgmt import customer_bp
+from controllers.admin import admin_bp
+from controllers.analytics import regression_bp
 
 import os 
 from dotenv import load_dotenv
@@ -34,7 +36,7 @@ def create_app():
     app.secret_key = os.getenv('SECRET_KEY', 'FB27D156173716A31912F1BD6CEDB')
 
     # CORS configuration
-    CORS(app)
+    CORS(app, origins="*")
 
     app.config['JSON_SORT_KEYS'] = False
     app.config['CORS_HEADERS'] = 'Content-Type'
@@ -47,6 +49,8 @@ def create_app():
     app.register_blueprint(parking_bp)
     app.register_blueprint(analytics_bp, url_prefix='/analytics')
     app.register_blueprint(customer_bp)
+    app.register_blueprint(admin_bp)
+    app.register_blueprint(regression_bp, url_prefix='/reg')
 
     init_jwt(app)
 
@@ -55,6 +59,7 @@ def create_app():
     # with app.app_context():
     #     from db.initializers import run_all_initializers // i uncomment nyo to after nyo mag migrate
     #     run_all_initializers()
+    
 
     # Initialize SocketIO and any additional services
     socketio.init_app(app)

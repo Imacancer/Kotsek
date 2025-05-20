@@ -17,10 +17,13 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 import uuid
 import secrets
+from utils.email_sender import generate_otp, send_otp_email
+import redis
+import time
 
 load_dotenv()
 
-supabase: Client = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
+supabase: Client = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_SERVICE_ROLE_KEY'))
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -29,6 +32,49 @@ OAUTH_STATE_STRING = secrets.token_hex(16)
 
 # JWT Secret (similar to jwtSecret in Golang)
 JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'c2lrbG9NTkw')
+
+# Initialize Redis for OTP storage with connection retry and error handling
+def init_redis():
+    """Initialize Redis connection with retry logic"""
+    max_retries = 3
+    retry_delay = 1  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            redis_client = redis.Redis(
+                host=os.getenv('REDIS_HOST', 'localhost'),
+                port=int(os.getenv('REDIS_PORT', 6379)),
+                db=0,
+                decode_responses=True,
+                socket_timeout=5,  # 5 seconds timeout
+                socket_connect_timeout=5,  # 5 seconds connection timeout
+                retry_on_timeout=True
+            )
+            # Test the connection
+            redis_client.ping()
+            print("✅ Successfully connected to Redis")
+            return redis_client
+        except redis.ConnectionError as e:
+            if attempt < max_retries - 1:
+                print(f"⚠️ Redis connection attempt {attempt + 1} failed: {str(e)}")
+                print(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                print("❌ Failed to connect to Redis after multiple attempts")
+                raise
+        except Exception as e:
+            print(f"❌ Unexpected error connecting to Redis: {str(e)}")
+            raise
+
+try:
+    redis_client = init_redis()
+except Exception as e:
+    print(f"❌ Redis initialization failed: {str(e)}")
+    print("⚠️ Running without Redis - OTP functionality will be disabled")
+    redis_client = None
+
+# OTP expiration time (10 minutes)
+OTP_EXPIRY = 600
 
 def init_jwt(app):
     """Initialize JWT with the Flask app"""
@@ -179,7 +225,8 @@ def google_callback():
             username=f"{first_name} {last_name}".strip() or email.split('@')[0],
             google_id=google_id,
             is_verified=True,
-            image_url=image_url
+            image_url=image_url,
+            role='Attendant' if not user else user.role  # Only set default role for new users
         )
         
         try:
@@ -197,10 +244,12 @@ def google_callback():
             'email': email,
             'firstName': first_name,
             'lastName': last_name,
-            'picture': user.image_url or picture
+            'picture': user.image_url or picture,
+            'role': user.role,
+            'is_blocked': user.is_blocked
         }
     )
-    print(f"Access token: {jwt_access_token}")
+    print(f"JWT Claims: {jwt_access_token}")
     refresh_token = create_refresh_token(identity=user.id)
     
     # Determine authentication provider
@@ -226,60 +275,159 @@ def get_user():
     # This matches the Golang structure where claims are extracted from the token
     return jsonify(user.to_dict()), 200
 
-# Keep your existing routes for non-Google authentication
 @auth_bp.route('/register', methods=['POST'])
 def register():
     try:
-        # Get form data instead of JSON
+        # Get form data
         email = request.form.get('email')
         username = request.form.get('username')
         password = request.form.get('password')
         profile_image = request.files.get('profile_image')
 
+        print(f"📝 Registration attempt for email: {email}")
+
         if not email or not password:
             return jsonify({'error': 'Email and password are required'}), 400
 
+        # Check if user exists
         existing_user = User.query.filter_by(email=email).first()
         if existing_user:
             return jsonify({'error': 'Email already exists'}), 400
 
-        # Handle image upload
+        # Handle image upload if provided
         image_url = None
         if profile_image and profile_image.filename != '':
-            # Generate unique filename
-            file_ext = os.path.splitext(profile_image.filename)[1]
-            unique_filename = f"{uuid.uuid4()}{file_ext}"
-            
-            # Upload to Supabase Storage
-            bucket_name = 'profile_images'
-            file_path = f"user_profiles/{unique_filename}"
-            
-            # Upload the file
             try:
+                # Generate unique filename
+                file_ext = os.path.splitext(profile_image.filename)[1]
+                unique_filename = f"{uuid.uuid4()}{file_ext}"
+                
+                # Upload to Supabase Storage
+                bucket_name = 'profile.images'
+                file_path = f"user_profiles/{unique_filename}"
+                
+                print(f"📤 Uploading image to Supabase: {file_path}")
+                
+                # Upload the file
                 supabase.storage.from_(bucket_name).upload(
                     file_path,
                     profile_image.read(),
                     file_options={"content-type": profile_image.mimetype}
                 )
+                
                 # Generate public URL
                 image_url = f"{os.getenv('SUPABASE_URL')}/storage/v1/object/public/{bucket_name}/{file_path}"
+                print(f"✅ Image uploaded successfully: {image_url}")
+                
             except Exception as upload_error:
-                print(f"Error uploading image: {upload_error}")
+                print(f"❌ Error uploading image: {upload_error}")
                 return jsonify({'error': 'Failed to upload profile image'}), 500
+
+        # Generate OTP
+        otp = generate_otp()
+        print(f"🔑 Generated OTP: {otp}")
+        
+        # Store OTP in Redis with expiration
+        if redis_client is None:
+            return jsonify({'error': 'OTP service is currently unavailable'}), 503
+
+        otp_key = f"register_otp:{email}"
+        otp_data = {
+            'otp': otp,
+            'username': username,
+            'password': generate_password_hash(password),
+            'image_url': image_url,
+            'role': 'Attendant'  # Default role for new users
+        }
+        
+        print(f"💾 Storing OTP data in Redis: {otp_data}")
+        redis_client.setex(
+            otp_key,
+            OTP_EXPIRY,
+            json.dumps(otp_data)
+        )
+
+        # Verify the data was stored correctly
+        stored_data = redis_client.get(otp_key)
+        print(f"✅ Verified stored data: {stored_data}")
+
+        # Send OTP email
+        if send_otp_email(email, otp):
+            print(f"✅ OTP email sent to: {email}")
+            return jsonify({
+                'message': 'OTP sent to your email',
+                'email': email,
+                'requires_otp': True
+            }), 200
+        else:
+            print("❌ Failed to send OTP email")
+            return jsonify({'error': 'Failed to send OTP'}), 500
+
+    except redis.RedisError as e:
+        print(f"❌ Redis error during registration: {str(e)}")
+        return jsonify({'error': 'OTP service is currently unavailable'}), 503
+    except Exception as e:
+        print(f"❌ Registration error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+    
+
+
+
+#Mag install ng redis first before paganahin itong endpoints, also set up redis first before running the endpoints
+
+
+
+
+@auth_bp.route('/verify-registration', methods=['POST'])
+def verify_registration():
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        otp = data.get('otp')
+
+        print(f"🔍 Verifying registration for email: {email}")
+        print(f"🔑 Received OTP: {otp}")
+
+        if not email or not otp:
+            print("❌ Missing email or OTP")
+            return jsonify({'error': 'Email and OTP are required'}), 400
+
+        # Get stored OTP data
+        otp_key = f"register_otp:{email}"
+        stored_data = redis_client.get(otp_key)
+        
+        print(f"📦 Stored data from Redis: {stored_data}")
+
+        if not stored_data:
+            print("❌ No stored data found in Redis")
+            return jsonify({'error': 'OTP expired or invalid'}), 400
+
+        stored_data = json.loads(stored_data)
+        print(f"🔐 Stored OTP: {stored_data['otp']}")
+        
+        if otp != stored_data['otp']:
+            print(f"❌ OTP mismatch - Received: {otp}, Stored: {stored_data['otp']}")
+            return jsonify({'error': 'Invalid OTP'}), 400
+
+        print("✅ OTP verified successfully")
 
         # Create new user
         new_user = User(
             email=email,
-            username=username,
-            is_verified=False,
-            image_url=image_url  # This will be None if no image was uploaded
+            username=stored_data['username'],
+            password_hash=stored_data['password'],
+            image_url=stored_data['image_url'],
+            role=stored_data.get('role', 'Attendant'),  # Get role from stored data or default to 'Attendant'
+            is_verified=True
         )
-        new_user.set_password(password)
         
         db.session.add(new_user)
         db.session.commit()
 
-        # Generate JWT tokens for immediate login after registration
+        # Clean up OTP
+        redis_client.delete(otp_key)
+
+        # Generate tokens
         access_token = create_access_token(identity=new_user.id)
         refresh_token = create_refresh_token(identity=new_user.id)
 
@@ -290,25 +438,94 @@ def register():
         }), 201
 
     except Exception as e:
+        print(f"❌ Error during verification: {str(e)}")
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
 @auth_bp.route('/login', methods=['POST'])
 def login():
-    data = request.get_json()
-    user = User.query.filter_by(email=data['email']).first()
-    
-    if not user or not user.check_password(data['password']):
-        return jsonify({'error': 'Invalid credentials'}), 401
-    
-    access_token = create_access_token(identity=user.id)
-    refresh_token = create_refresh_token(identity=user.id)
-    
-    return jsonify({
-        'access_token': access_token,
-        'refresh_token': refresh_token,
-        'user': user.to_dict()
-    }), 200
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
+
+        if not email or not password:
+            return jsonify({'error': 'Email and password are required'}), 400
+
+        # Find user
+        user = User.query.filter_by(email=email).first()
+        if not user or not user.check_password(password):
+            return jsonify({'error': 'Invalid credentials'}), 401
+
+        # Generate OTP
+        otp = generate_otp()
+        
+        # Store OTP in Redis
+        otp_key = f"login_otp:{email}"
+        redis_client.setex(
+            otp_key,
+            OTP_EXPIRY,
+            json.dumps({
+                'otp': otp,
+                'user_id': str(user.id)
+            })
+        )
+
+        # Send OTP email
+        if send_otp_email(email, otp):
+            return jsonify({
+                'message': 'OTP sent to your email',
+                'email': email,
+                'requires_otp': True
+            }), 200
+        else:
+            return jsonify({'error': 'Failed to send OTP'}), 500
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@auth_bp.route('/verify-login', methods=['POST'])
+def verify_login():
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        otp = data.get('otp')
+
+        if not email or not otp:
+            return jsonify({'error': 'Email and OTP are required'}), 400
+
+        # Get stored OTP data
+        otp_key = f"login_otp:{email}"
+        stored_data = redis_client.get(otp_key)
+
+        if not stored_data:
+            return jsonify({'error': 'OTP expired or invalid'}), 400
+
+        stored_data = json.loads(stored_data)
+        
+        if otp != stored_data['otp']:
+            return jsonify({'error': 'Invalid OTP'}), 400
+
+        # Get user
+        user = User.query.get(stored_data['user_id'])
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        # Clean up OTP
+        redis_client.delete(otp_key)
+
+        # Generate tokens
+        access_token = create_access_token(identity=user.id)
+        refresh_token = create_refresh_token(identity=user.id)
+
+        return jsonify({
+            'access_token': access_token,
+            'refresh_token': refresh_token,
+            'user': user.to_dict()
+        }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @auth_bp.route('/refresh', methods=['POST'])
 @jwt_required(refresh=True)
@@ -323,3 +540,27 @@ def logout():
     # Similar to the Golang implementation - just return OK
     # Since JWTs are stateless, actual logout happens on client side
     return jsonify({'message': 'Logged out successfully'}), 200
+
+@auth_bp.route('/test-email', methods=['POST'])
+def test_email():
+    try:
+        data = request.get_json()
+        test_email = data.get('email')
+        
+        if not test_email:
+            return jsonify({'error': 'Email is required'}), 400
+
+        # Generate test OTP
+        otp = generate_otp()
+        
+        # Send test email
+        if send_otp_email(test_email, otp):
+            return jsonify({
+                'message': 'Test email sent successfully',
+                'otp': otp  # Only for testing, remove in production
+            }), 200
+        else:
+            return jsonify({'error': 'Failed to send test email'}), 500
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500

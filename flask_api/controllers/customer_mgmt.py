@@ -3,6 +3,10 @@ from models.base import db
 from models.customer import ParkingCustomer
 from sqlalchemy.exc import IntegrityError
 from uuid import UUID
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from models.users import User
+from functools import wraps
+from controllers.admin import role_required
 
 customer_bp = Blueprint('parking_customer', __name__)
 
@@ -15,6 +19,8 @@ def is_valid_uuid(uuid_string):
         return False
 
 @customer_bp.route('/create-customer', methods=['POST'])
+@jwt_required()
+@role_required(['Admin', 'Manager'])
 def create_customer():
     """Add a new parking customer or update existing one based on plate number"""
     data = request.get_json()
@@ -84,9 +90,22 @@ def create_customer():
         return jsonify({'error': str(e)}), 500
 
 @customer_bp.route('/get-customers', methods=['GET'])
+@jwt_required()
+@role_required(['Admin', 'Manager', 'Attendant'])
 def get_customers():
     """Fetch all parking customers with optional filtering"""
     try:
+        # Log the current user's identity
+        current_user_id = get_jwt_identity()
+        print(f"Current user ID: {current_user_id}")
+        
+        current_user = User.query.filter_by(id=current_user_id).first()
+        if not current_user:
+            print(f"User not found for ID: {current_user_id}")
+            return jsonify({'error': 'User not found'}), 404
+            
+        print(f"User role: {current_user.role}")
+        
         # Get query parameters for filtering
         is_registered = request.args.get('is_registered')
         plate_number = request.args.get('plate_number')
@@ -127,6 +146,8 @@ def get_customers():
         return jsonify({'error': str(e)}), 500
 
 @customer_bp.route('/get-customer/<customer_id>', methods=['GET'])
+@jwt_required()
+@role_required(['Admin', 'Manager', 'Attendant'])
 def get_customer(customer_id):
     """Fetch a specific parking customer by ID"""
     if not is_valid_uuid(customer_id):
@@ -160,6 +181,8 @@ def get_customer(customer_id):
         return jsonify({'error': str(e)}), 500
     
 @customer_bp.route('/update-customer/<customer_id>', methods=['PATCH'])
+@jwt_required()
+@role_required(['Admin', 'Manager'])
 def update_customer(customer_id):
     """Update specific fields of a parking customer"""
     if not is_valid_uuid(customer_id):
@@ -202,6 +225,8 @@ def update_customer(customer_id):
         return jsonify({'error': str(e)}), 500
 
 @customer_bp.route('/update-registration/<customer_id>', methods=['PUT'])
+@jwt_required()
+@role_required(['Admin', 'Manager'])
 def update_registration(customer_id):
     """Update only the is_registered field of a parking customer"""
     if not is_valid_uuid(customer_id):
@@ -232,6 +257,8 @@ def update_registration(customer_id):
         return jsonify({'error': str(e)}), 500
 
 @customer_bp.route('/<customer_id>', methods=['DELETE'])
+@jwt_required()
+@role_required(['Admin', 'Manager'])
 def delete_customer(customer_id):
     """Remove a parking customer"""
     if not is_valid_uuid(customer_id):

@@ -64,6 +64,7 @@ interface Customer {
 interface NewCustomer {
   first_name: string;
   last_name: string;
+  plate_number: string;
   contact_num?: string;
   address?: string;
   email?: string;
@@ -75,6 +76,11 @@ interface UpdateCustomer {
   address?: string;
   email?: string;
   is_registered: boolean;
+}
+
+interface User {
+  role: string;
+  is_blocked: boolean;
 }
 
 export default function CustomerPage() {
@@ -95,26 +101,61 @@ export default function CustomerPage() {
   const [newCustomer, setNewCustomer] = useState<NewCustomer>({
     first_name: "",
     last_name: "",
+    plate_number: "",
     is_registered: true,
   });
   const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
   const [customerToDelete, setCustomerToDelete] = useState<Customer | null>(
     null
   );
+  const [user, setUser] = useState<User | null>(null);
 
   const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL;
 
   useEffect(() => {
+    const userData = sessionStorage.getItem("user");
+    if (userData) {
+      setUser(JSON.parse(userData));
+    }
+
     fetchCustomers();
   }, []);
 
   const fetchCustomers = async () => {
     try {
-      const response = await fetch(`${SERVER_URL}/get-customers`);
-      if (!response.ok) throw new Error("Failed to fetch customers");
+      const token = sessionStorage.getItem("access_token");
+      if (!token) {
+        console.error("No access token found");
+        setError("Authentication required");
+        return;
+      }
+
+      console.log(
+        "Fetching customers with token:",
+        token.substring(0, 20) + "..."
+      );
+
+      const response = await fetch(`${SERVER_URL}/get-customers`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error("Error response:", {
+          status: response.status,
+          statusText: response.statusText,
+          data: errorData,
+        });
+        throw new Error(errorData.error || "Failed to fetch customers");
+      }
+
       const data = await response.json();
       setCustomers(data);
     } catch (err) {
+      console.error("Error fetching customers:", err);
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
       setLoading(false);
@@ -126,19 +167,35 @@ export default function CustomerPage() {
     isRegistered: boolean
   ) => {
     try {
+      const token = sessionStorage.getItem("access_token");
+      if (!token) {
+        toast.error("Authentication required");
+        return;
+      }
+
       const response = await fetch(
         `${SERVER_URL}/update-registration/${customerId}`,
         {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
           body: JSON.stringify({ is_registered: isRegistered }),
         }
       );
 
-      if (!response.ok) throw new Error("Failed to update registration status");
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(
+          errorData.error || "Failed to update registration status"
+        );
+      }
+
       toast.success("Registration status updated successfully");
-      await fetchCustomers(); // Refresh the table
+      await fetchCustomers();
     } catch (err) {
+      console.error("Error updating registration:", err);
       toast.error(
         err instanceof Error
           ? err.message
@@ -161,11 +218,18 @@ export default function CustomerPage() {
   const handleSaveUpdate = async () => {
     if (!selectedCustomer) return;
     try {
+      const token = sessionStorage.getItem("access_token");
+      if (!token) {
+        toast.error("Authentication required");
+        return;
+      }
+
       const response = await fetch(
         `${SERVER_URL}/update-customer/${selectedCustomer.customer_id}`,
         {
           method: "PATCH",
           headers: {
+            Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify(updateCustomerData),
@@ -180,8 +244,9 @@ export default function CustomerPage() {
 
       toast.success(responseData.message);
       setShowUpdateDialog(false);
-      await fetchCustomers(); // Refresh the table
+      await fetchCustomers();
     } catch (err) {
+      console.error("Error updating customer:", err);
       toast.error(
         err instanceof Error ? err.message : "Failed to update customer"
       );
@@ -197,11 +262,18 @@ export default function CustomerPage() {
     if (!customerToDelete) return;
 
     try {
+      const token = sessionStorage.getItem("access_token");
+      if (!token) {
+        toast.error("Authentication required");
+        return;
+      }
+
       const response = await fetch(
         `${SERVER_URL}/delete-customer/${customerToDelete.customer_id}`,
         {
           method: "DELETE",
           headers: {
+            Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
         }
@@ -214,8 +286,9 @@ export default function CustomerPage() {
 
       toast.success("Customer deleted successfully");
       setShowDeleteConfirmation(false);
-      await fetchCustomers(); // Refresh the table
+      await fetchCustomers();
     } catch (err) {
+      console.error("Error deleting customer:", err);
       toast.error(
         err instanceof Error ? err.message : "Failed to delete customer"
       );
@@ -224,35 +297,47 @@ export default function CustomerPage() {
 
   const handleAddCustomer = async () => {
     try {
+      const token = sessionStorage.getItem("access_token");
+      if (!token) {
+        toast.error("Authentication required");
+        return;
+      }
+
       const response = await fetch(`${SERVER_URL}/create-customer`, {
         method: "POST",
         headers: {
+          Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify(newCustomer),
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to create customer");
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to create customer");
       }
 
       const result = await response.json();
       toast.success(result.message);
 
-      // Reset form and close dialog
       setNewCustomer({
         first_name: "",
         last_name: "",
+        plate_number: "",
         is_registered: true,
       });
       setShowAddDialog(false);
-
-      // Refresh customer list
       fetchCustomers();
     } catch (err) {
-      toast.error("Failed to create customer");
+      console.error("Error creating customer:", err);
+      toast.error(
+        err instanceof Error ? err.message : "Failed to create customer"
+      );
     }
+  };
+
+  const canModifyCustomers = () => {
+    return user?.role === "Admin" || user?.role === "Manager";
   };
 
   return (
@@ -261,129 +346,163 @@ export default function CustomerPage() {
         <h1 className="text-3xl font-bold tracking-tight">
           Customer Management
         </h1>
-        <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
-          <DialogTrigger asChild>
-            <Button className="flex items-center gap-2">
-              <Plus className="h-4 w-4" />
-              Add Customer
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-[425px]">
-            <DialogHeader>
-              <DialogTitle>Add New Customer</DialogTitle>
-              <DialogDescription>
-                Add a new customer to the system. Fields marked with * are
-                required.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="grid gap-4 py-4">
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="firstName" className="text-right">
-                  First Name *
-                </Label>
-                <Input
-                  id="firstName"
-                  className="col-span-3"
-                  value={newCustomer.first_name}
-                  onChange={(e) =>
-                    setNewCustomer({
-                      ...newCustomer,
-                      first_name: e.target.value,
-                    })
-                  }
-                />
-              </div>
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="lastName" className="text-right">
-                  Last Name *
-                </Label>
-                <Input
-                  id="lastName"
-                  className="col-span-3"
-                  value={newCustomer.last_name}
-                  onChange={(e) =>
-                    setNewCustomer({
-                      ...newCustomer,
-                      last_name: e.target.value,
-                    })
-                  }
-                />
-              </div>
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="isRegistered" className="text-right">
-                  Registration
-                </Label>
-                <div className="flex items-center space-x-2 col-span-3">
-                  <Checkbox
-                    id="isRegistered"
-                    checked={newCustomer.is_registered}
-                    onCheckedChange={(checked) =>
+        {canModifyCustomers() && (
+          <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
+            <DialogTrigger asChild>
+              <Button className="flex items-center gap-2">
+                <Plus className="h-4 w-4" />
+                Add Customer
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-[425px]">
+              <DialogHeader>
+                <DialogTitle>Add New Customer</DialogTitle>
+                <DialogDescription>
+                  Add a new customer to the system. Fields marked with * are
+                  required.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="grid gap-4 py-4">
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="firstName" className="text-right">
+                    First Name *
+                  </Label>
+                  <Input
+                    id="firstName"
+                    className="col-span-3"
+                    value={newCustomer.first_name}
+                    onChange={(e) =>
                       setNewCustomer({
                         ...newCustomer,
-                        is_registered: checked === true,
+                        first_name: e.target.value,
                       })
                     }
                   />
-                  <label
-                    htmlFor="isRegistered"
-                    className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                  >
-                    Registered Customer
-                  </label>
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="lastName" className="text-right">
+                    Last Name *
+                  </Label>
+                  <Input
+                    id="lastName"
+                    className="col-span-3"
+                    value={newCustomer.last_name}
+                    onChange={(e) =>
+                      setNewCustomer({
+                        ...newCustomer,
+                        last_name: e.target.value,
+                      })
+                    }
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="plateNumber" className="text-right">
+                    Plate Number *
+                  </Label>
+                  <Input
+                    id="plateNumber"
+                    className="col-span-3"
+                    value={newCustomer.plate_number}
+                    onChange={(e) =>
+                      setNewCustomer({
+                        ...newCustomer,
+                        plate_number: e.target.value,
+                      })
+                    }
+                    placeholder="Enter vehicle plate number"
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="isRegistered" className="text-right">
+                    Registration
+                  </Label>
+                  <div className="flex items-center space-x-2 col-span-3">
+                    <Checkbox
+                      id="isRegistered"
+                      checked={newCustomer.is_registered}
+                      onCheckedChange={(checked) =>
+                        setNewCustomer({
+                          ...newCustomer,
+                          is_registered: checked === true,
+                        })
+                      }
+                    />
+                    <label
+                      htmlFor="isRegistered"
+                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                    >
+                      Registered Customer
+                    </label>
+                  </div>
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="contact" className="text-right">
+                    Contact
+                  </Label>
+                  <Input
+                    id="contact"
+                    className="col-span-3"
+                    value={newCustomer.contact_num || ""}
+                    onChange={(e) =>
+                      setNewCustomer({
+                        ...newCustomer,
+                        contact_num: e.target.value,
+                      })
+                    }
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="email" className="text-right">
+                    Email
+                  </Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    className="col-span-3"
+                    value={newCustomer.email || ""}
+                    onChange={(e) =>
+                      setNewCustomer({ ...newCustomer, email: e.target.value })
+                    }
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="address" className="text-right">
+                    Address
+                  </Label>
+                  <Input
+                    id="address"
+                    className="col-span-3"
+                    value={newCustomer.address || ""}
+                    onChange={(e) =>
+                      setNewCustomer({
+                        ...newCustomer,
+                        address: e.target.value,
+                      })
+                    }
+                  />
                 </div>
               </div>
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="contact" className="text-right">
-                  Contact
-                </Label>
-                <Input
-                  id="contact"
-                  className="col-span-3"
-                  value={newCustomer.contact_num || ""}
-                  onChange={(e) =>
-                    setNewCustomer({
-                      ...newCustomer,
-                      contact_num: e.target.value,
-                    })
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowAddDialog(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleAddCustomer}
+                  disabled={
+                    !newCustomer.first_name ||
+                    !newCustomer.last_name ||
+                    !newCustomer.plate_number
                   }
-                />
-              </div>
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="email" className="text-right">
-                  Email
-                </Label>
-                <Input
-                  id="email"
-                  type="email"
-                  className="col-span-3"
-                  value={newCustomer.email || ""}
-                  onChange={(e) =>
-                    setNewCustomer({ ...newCustomer, email: e.target.value })
-                  }
-                />
-              </div>
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="address" className="text-right">
-                  Address
-                </Label>
-                <Input
-                  id="address"
-                  className="col-span-3"
-                  value={newCustomer.address || ""}
-                  onChange={(e) =>
-                    setNewCustomer({ ...newCustomer, address: e.target.value })
-                  }
-                />
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setShowAddDialog(false)}>
-                Cancel
-              </Button>
-              <Button onClick={handleAddCustomer}>Save Customer</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+                >
+                  Save Customer
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
 
         {/* Update Customer Dialog */}
         <Dialog open={showUpdateDialog} onOpenChange={setShowUpdateDialog}>
@@ -571,60 +690,67 @@ export default function CustomerPage() {
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center space-x-2">
-                            <Checkbox
-                              id={`reg-${customer.customer_id}`}
-                              checked={customer.is_registered}
-                              onCheckedChange={(checked) =>
-                                handleUpdateRegistration(
-                                  customer.customer_id,
-                                  checked === true
-                                )
-                              }
-                            />
-                            <Badge
-                              variant={
-                                customer.is_registered
-                                  ? "default"
-                                  : "destructive"
-                              }
-                              className="whitespace-nowrap"
-                            >
-                              {customer.is_registered
-                                ? "Registered"
-                                : "Unregistered"}
-                            </Badge>
+                            {canModifyCustomers() ? (
+                              <Checkbox
+                                id={`reg-${customer.customer_id}`}
+                                checked={customer.is_registered}
+                                onCheckedChange={(checked) =>
+                                  handleUpdateRegistration(
+                                    customer.customer_id,
+                                    checked === true
+                                  )
+                                }
+                              />
+                            ) : (
+                              <Badge
+                                variant={
+                                  customer.is_registered
+                                    ? "default"
+                                    : "destructive"
+                                }
+                                className="whitespace-nowrap"
+                              >
+                                {customer.is_registered
+                                  ? "Registered"
+                                  : "Unregistered"}
+                              </Badge>
+                            )}
                           </div>
                         </TableCell>
                         <TableCell>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                className="h-8 w-8 p-0 hover:bg-slate-100"
+                          {canModifyCustomers() ? (
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  className="h-8 w-8 p-0 hover:bg-slate-100"
+                                >
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent
+                                align="end"
+                                className="w-[160px]"
                               >
-                                <MoreHorizontal className="h-4 w-4" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent
-                              align="end"
-                              className="w-[160px]"
-                            >
-                              <DropdownMenuItem
-                                onClick={() => handleUpdateDetails(customer)}
-                                className="cursor-pointer"
-                              >
-                                <User className="mr-2 h-4 w-4" />
-                                Update Details
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onClick={() => handleDeleteCustomer(customer)}
-                                className="cursor-pointer text-red-600"
-                              >
-                                <Trash2 className="mr-2 h-4 w-4" />
-                                Delete Customer
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
+                                <DropdownMenuItem
+                                  onClick={() => handleUpdateDetails(customer)}
+                                  className="cursor-pointer"
+                                >
+                                  <User className="mr-2 h-4 w-4" />
+                                  Update Details
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={() => handleDeleteCustomer(customer)}
+                                  className="cursor-pointer text-red-600"
+                                >
+                                  <Trash2 className="mr-2 h-4 w-4" />
+                                  Delete Customer
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          ) : (
+                            <span className="text-gray-400">View only</span>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))

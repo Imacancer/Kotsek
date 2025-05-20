@@ -13,7 +13,9 @@ class User(db.Model):
     google_id = db.Column(db.String(120), unique=True, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     is_verified = db.Column(db.Boolean, default=False)
+    is_blocked = db.Column(db.Boolean, default=False)
     image_url = db.Column(db.Text, nullable=True)
+    role = db.Column(db.String(50))
     
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -31,5 +33,7 @@ class User(db.Model):
             'email': self.email,
             'created_at': self.created_at.isoformat(),
             'is_verified': self.is_verified,
-            'image_url': self.image_url
+            'is_blocked': self.is_blocked,
+            'image_url': self.image_url,
+            'role': self.role
         }

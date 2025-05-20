@@ -4,7 +4,8 @@ from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 
 from alembic import context
-import models.incident
+import models
+import models.system_logs
 from db.db import db 
 import os
 from dotenv import load_dotenv

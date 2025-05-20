@@ -64,7 +64,8 @@ interface User {
   last_name?: string; // Optional, based on ParkingCustomer model
   plate_number?: string; // Added: Include plate number from backend
   display_name_with_plate?: string; // Added: The formatted string for dropdown
-  // Add any other properties your backend returns for a registered customer
+  role?: string; // Added: User role
+  is_blocked?: boolean; // Added: User blocked status
 }
 
 interface EntryDetectionData {
@@ -1103,6 +1104,8 @@ const SurveillanceInterface = () => {
                 ? `${payload.firstName} ${payload.lastName || ""}`
                 : payload.email,
               profile_image: payload.picture || null,
+              role: payload.role || "Attendant", // Add role with default
+              is_blocked: payload.is_blocked || false, // Add blocked status with default
             };
 
             sessionStorage.setItem("user", JSON.stringify(userData));

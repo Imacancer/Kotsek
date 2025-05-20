@@ -1,12 +1,7 @@
-<<<<<<< HEAD
 
 # FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
 
 # WORKDIR /app
-=======
-# Use NVIDIA base image with Python and CUDA support
-FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
->>>>>>> 2a634e2cc12f30827d4e7a679bfca5f6f8ef4bce
 
 
 
@@ -32,21 +27,10 @@ FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
 # # Upgrade pip and tools
 # RUN pip install --upgrade pip setuptools wheel
 
-<<<<<<< HEAD
-# # Copy and install Python dependencies
-# COPY requirements.txt .
-# COPY wheels/ ./wheels/ 
-# RUN pip install --find-links=./wheels -r requirements.txt || \
-#     pip install -r requirements.txt
-
-
-# COPY paddle_models /paddle_models
-=======
 # Copy and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY paddle_models /paddle_models
->>>>>>> 2a634e2cc12f30827d4e7a679bfca5f6f8ef4bce
+# COPY requirements.txt .
+# RUN pip install --no-cache-dir -r requirements.txt
+# COPY paddle_models /paddle_models
 
 # RUN mkdir -p /root/.paddleocr/whl/det/en/ && \
 #     mkdir -p /root/.paddleocr/whl/rec/en/ && \
@@ -166,7 +150,7 @@ COPY paddle_models /paddle_models
 
 FROM python:3.10-slim
 
-WORKDIR /
+WORKDIR /app
 
 RUN apt-get update && \
 
