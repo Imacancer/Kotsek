@@ -3,12 +3,16 @@ from models.base import db
 from models.customer import ParkingCustomer
 from sqlalchemy.exc import IntegrityError
 from uuid import UUID
-from flask_jwt_extended import jwt_required, get_jwt_identity
-from models.users import User
-from functools import wraps
-from controllers.admin import role_required
-
+from flask import current_app
+from flask_mail import Message
+import logging
+import os
+from dotenv import load_dotenv
 customer_bp = Blueprint('parking_customer', __name__)
+logger = logging.getLogger(__name__)
+load_dotenv()
+SENDER=os.getenv("MAIL_USERNAME")
+
 
 # Helper function to validate UUID
 def is_valid_uuid(uuid_string):
@@ -19,8 +23,6 @@ def is_valid_uuid(uuid_string):
         return False
 
 @customer_bp.route('/create-customer', methods=['POST'])
-@jwt_required()
-@role_required(['Admin', 'Manager'])
 def create_customer():
     """Add a new parking customer or update existing one based on plate number"""
     data = request.get_json()
@@ -73,6 +75,12 @@ def create_customer():
         
         db.session.add(new_customer)
         db.session.commit()
+        send_congrats_email(
+            to_email=new_customer.email,
+            name=f"{new_customer.first_name} {new_customer.last_name}",
+            plate=new_customer.plate_number,
+            vehicle=new_customer.vehicle_type
+        )
         
         return jsonify({
             'message': 'Customer added successfully',
@@ -88,66 +96,85 @@ def create_customer():
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
+def send_congrats_email(to_email, name, plate, vehicle):
+    if not to_email:
+        return
+
+    subject = "Welcome to KoTsek Parking"
+    body = f"""Hi {name},
+
+Congratulations! You are now a registered parking user.
+
+Your vehicle:
+Plate Number: {plate}
+Vehicle Type: {vehicle or 'N/A'}
+
+Thank you for choosing KoTsek!
+"""
+
+    try:
+
+        msg = Message(subject, recipients=[to_email], body=body,sender=SENDER)
+        current_app.extensions['mail'].send(msg)
+        print(f"✅ Email sent to {to_email}")
+    except Exception as e:
+        print(f"Email sending failed: {e}")
+        print(f"❌ Email sending failed: {e}")
+        logger.error(f"Email sending failed: {e}")
+
 
 @customer_bp.route('/get-customers', methods=['GET'])
-@jwt_required()
-@role_required(['Admin', 'Manager', 'Attendant'])
 def get_customers():
     """Fetch all parking customers with optional filtering"""
     try:
-        # Log the current user's identity
-        current_user_id = get_jwt_identity()
-        print(f"Current user ID: {current_user_id}")
-        
-        current_user = User.query.filter_by(id=current_user_id).first()
-        if not current_user:
-            print(f"User not found for ID: {current_user_id}")
-            return jsonify({'error': 'User not found'}), 404
-            
-        print(f"User role: {current_user.role}")
-        
-        # Get query parameters for filtering
         is_registered = request.args.get('is_registered')
         plate_number = request.args.get('plate_number')
-        
+        search = request.args.get('search')
+
         query = ParkingCustomer.query
-        
-        # Apply filters if provided
+
         if is_registered is not None:
             is_registered = is_registered.lower() == 'true'
             query = query.filter(ParkingCustomer.is_registered == is_registered)
-            
+
         if plate_number:
-            query = query.filter(ParkingCustomer.plate_number == plate_number)
-        
+            query = query.filter(ParkingCustomer.plate_number.ilike(f"%{plate_number}%"))
+
+        if search:
+            search_term = f"%{search.lower()}%"
+            query = query.filter(
+                db.or_(
+                    db.func.lower(ParkingCustomer.first_name).ilike(search_term),
+                    db.func.lower(ParkingCustomer.last_name).ilike(search_term),
+                    db.func.lower(ParkingCustomer.plate_number).ilike(search_term)
+                )
+            )
+        query = query.order_by(ParkingCustomer.last_name.asc(), ParkingCustomer.first_name.asc())
+
         customers = query.all()
-        
-        result = []
-        for customer in customers:
-            result.append({
-                'customer_id': str(customer.customer_id),
-                'first_name': customer.first_name,
-                'last_name': customer.last_name,
-                'plate_number': customer.plate_number,
-                'color': customer.color,
-                'vehicle_type': customer.vehicle_type,
-                'contact_num': customer.contact_num,
-                'is_registered': customer.is_registered,
-                'address': customer.address,
-                'email': customer.email,
-                'car_model': customer.car_model,
-                'created_at': customer.created_at.isoformat() if customer.created_at else None,
-                'updated_at': customer.updated_at.isoformat() if customer.updated_at else None
-            })
-        
+        result = [{
+            'customer_id': str(customer.customer_id),
+            'first_name': customer.first_name,
+            'last_name': customer.last_name,
+            'plate_number': customer.plate_number,
+            'color': customer.color,
+            'vehicle_type': customer.vehicle_type,
+            'contact_num': customer.contact_num,
+            'is_registered': customer.is_registered,
+            'address': customer.address,
+            'email': customer.email,
+            'car_model': customer.car_model,
+            'created_at': customer.created_at.isoformat() if customer.created_at else None,
+            'updated_at': customer.updated_at.isoformat() if customer.updated_at else None
+        } for customer in customers]
+
         return jsonify(result), 200
-    
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
 @customer_bp.route('/get-customer/<customer_id>', methods=['GET'])
-@jwt_required()
-@role_required(['Admin', 'Manager', 'Attendant'])
 def get_customer(customer_id):
     """Fetch a specific parking customer by ID"""
     if not is_valid_uuid(customer_id):
@@ -181,8 +208,6 @@ def get_customer(customer_id):
         return jsonify({'error': str(e)}), 500
     
 @customer_bp.route('/update-customer/<customer_id>', methods=['PATCH'])
-@jwt_required()
-@role_required(['Admin', 'Manager'])
 def update_customer(customer_id):
     """Update specific fields of a parking customer"""
     if not is_valid_uuid(customer_id):
@@ -202,7 +227,11 @@ def update_customer(customer_id):
         updated = False
         for field in allowed_fields:
             if field in data:
-                setattr(customer, field, data[field])
+                value = data[field]
+                if isinstance(value, str) and value.strip() == "":
+                    setattr(customer, field, None)  # Convert empty strings to NULL
+                else:
+                    setattr(customer, field, value)
                 updated = True
                 
         if not updated:
@@ -225,8 +254,6 @@ def update_customer(customer_id):
         return jsonify({'error': str(e)}), 500
 
 @customer_bp.route('/update-registration/<customer_id>', methods=['PUT'])
-@jwt_required()
-@role_required(['Admin', 'Manager'])
 def update_registration(customer_id):
     """Update only the is_registered field of a parking customer"""
     if not is_valid_uuid(customer_id):
@@ -256,9 +283,7 @@ def update_registration(customer_id):
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
-@customer_bp.route('/<customer_id>', methods=['DELETE'])
-@jwt_required()
-@role_required(['Admin', 'Manager'])
+@customer_bp.route('/delete-customer/<customer_id>', methods=['DELETE'])
 def delete_customer(customer_id):
     """Remove a parking customer"""
     if not is_valid_uuid(customer_id):
