@@ -1,11 +1,11 @@
 cmake
 flask
-flask-sqlalchemy
+sqlalchemy==1.4.46
 flask-migrate
 flask-cors
 flask-socketio
 opencv-python
-ultralytics==8.3.55
+ultralytics==8.3.128
 pytesseract
 numpy
 python-dotenv
@@ -13,11 +13,16 @@ requests
 Werkzeug
 supabase
 flask-jwt-extended
-paddleocr
-paddlepaddle
+paddleocr==2.9.1
+paddlepaddle==2.6.2
 psycopg2-binary
+pandas
+numpy
+scikit-learn
+sendgrid
+redis
 lap==0.5.12
-
+Flask-Mail
 # Put this just before torch packages:
 --extra-index-url https://download.pytorch.org/whl/cu121
 torch

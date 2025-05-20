@@ -8,6 +8,9 @@ from controllers.assign_guard import guard_bp
 from controllers.parking_lot import parking_bp
 from controllers.tungtungtungsahur import analytics_bp
 from controllers.customer_mgmt import customer_bp 
+from controllers.admin import admin_bp
+from controllers.analytics import regression_bp
+from flask_mail import Mail
 import os 
 from dotenv import load_dotenv
 from db.db import init_db, db  # Import the init_db function and db instance
@@ -21,7 +24,7 @@ from db.db import init_db, db  # Import the init_db function and db instance
 # 5 alembic stamp head // to stamp the current revision as the head without applying any changes
 
 load_dotenv()
-
+mail = Mail()
 
 def create_app():
     global entry_video_processor, exit_video_processor
@@ -33,8 +36,15 @@ def create_app():
 
     app.config['JSON_SORT_KEYS'] = False
     app.config['CORS_HEADERS'] = 'Content-Type'
-    
-    
+    app.config.update(
+        MAIL_SERVER='smtp.gmail.com',
+        MAIL_PORT=587,
+        MAIL_USE_TLS=True,
+        MAIL_USERNAME=os.getenv("MAIL_USERNAME"),
+        MAIL_PASSWORD=os.getenv("MAIL_PASSWORD"),
+        MAIL_DEFAULT_SENDER=os.getenv("MAIL_USERNAME")
+    )
+    mail.init_app(app)
     # Register the auth blueprint
     app.register_blueprint(auth_bp)
     app.register_blueprint(vehicle_bp)
@@ -42,6 +52,8 @@ def create_app():
     app.register_blueprint(parking_bp)
     app.register_blueprint(analytics_bp, url_prefix='/analytics')
     app.register_blueprint(customer_bp)
+    app.register_blueprint(admin_bp)
+    app.register_blueprint(regression_bp, url_prefix='/reg')
 
     init_jwt(app)
 
@@ -58,8 +70,12 @@ def create_app():
 
     video_path_exit = "./sample/2exitnew.mp4"  # Update path as necessary
     video_path_entry = "./sample/1entrynew.mp4"
-    entry_video_processor = EntryVideoProcessor(socketio, video_path_entry) 
-    exit_video_processor = VideoProcessor(socketio, video_path_exit)
+    bike = "./sample/bike_in.mp4"
+    bike_exit = "./sample/bikeout.mp4"
+    motor_entry = "./sample/motor_in.mp4"
+    motor_exit = "./sample/motor_out.mp4"  
+    entry_video_processor = EntryVideoProcessor(socketio, motor_entry) 
+    exit_video_processor = VideoProcessor(socketio, motor_exit)
     app.entry_video_processor = entry_video_processor
     app.exit_video_processor = exit_video_processor
 

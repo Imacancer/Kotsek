@@ -1624,6 +1624,7 @@ class EntryVideoProcessor:
 
                         direction = info.get("direction", None)
                         if label == "bicycle":
+                            print(f"Printing bicycle logic")
                             
                             if self.is_exit_camera:
                                 self.upload_vehicle_exit(

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   MoreHorizontal,
   UserMinus,
@@ -68,6 +68,8 @@ interface NewCustomer {
   address?: string;
   email?: string;
   is_registered: boolean;
+  plate_number: string;
+  vehicle_type?: string;
 }
 
 interface UpdateCustomer {
@@ -78,6 +80,28 @@ interface UpdateCustomer {
 }
 
 export default function CustomerPage() {
+  const [searchTerm, setSearchTerm] = useState("");
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [pendingDialog, setPendingDialog] = useState<
+    null | "update" | "delete"
+  >(null);
+  const [openDropdownFor, setOpenDropdownFor] = useState<string | null>(null);
+  const openUpdateDialog = (customer: Customer) => {
+    setSelectedCustomer(customer);
+    setUpdateCustomerData({
+      contact_num: customer.contact_num || "",
+      address: customer.address || "",
+      email: customer.email || "",
+      is_registered: customer.is_registered,
+    });
+    setShowUpdateDialog(true);
+  };
+
+  const openDeleteDialog = (customer: Customer) => {
+    setCustomerToDelete(customer);
+    setShowDeleteConfirmation(true);
+  };
+
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -96,21 +120,31 @@ export default function CustomerPage() {
     first_name: "",
     last_name: "",
     is_registered: true,
+    plate_number: "",
+    vehicle_type: "",
   });
   const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
   const [customerToDelete, setCustomerToDelete] = useState<Customer | null>(
     null
   );
+  const pendingCustomerRef = useRef<Customer | null>(null);
 
   const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL;
 
   useEffect(() => {
-    fetchCustomers();
-  }, []);
+    const delayDebounce = setTimeout(() => {
+      fetchCustomers(searchTerm);
+    }, 300); // debounce search
 
-  const fetchCustomers = async () => {
+    return () => clearTimeout(delayDebounce);
+  }, [searchTerm]);
+
+  const fetchCustomers = async (searchTerm: string = "") => {
     try {
-      const response = await fetch(`${SERVER_URL}/get-customers`);
+      const query = searchTerm
+        ? `?search=${encodeURIComponent(searchTerm)}`
+        : "";
+      const response = await fetch(`${SERVER_URL}/get-customers${query}`);
       if (!response.ok) throw new Error("Failed to fetch customers");
       const data = await response.json();
       setCustomers(data);
@@ -148,6 +182,7 @@ export default function CustomerPage() {
   };
 
   const handleUpdateDetails = (customer: Customer) => {
+    console.log("Update Details clicked:", customer);
     setSelectedCustomer(customer);
     setUpdateCustomerData({
       contact_num: customer.contact_num || "",
@@ -156,6 +191,7 @@ export default function CustomerPage() {
       is_registered: customer.is_registered,
     });
     setShowUpdateDialog(true);
+    console.log("Update dialog should now be open.");
   };
 
   const handleSaveUpdate = async () => {
@@ -223,6 +259,24 @@ export default function CustomerPage() {
   };
 
   const handleAddCustomer = async () => {
+    const { first_name, last_name, plate_number, contact_num } = newCustomer;
+
+    if (
+      !first_name.trim() ||
+      !last_name.trim() ||
+      !plate_number.trim() ||
+      !contact_num?.trim()
+    ) {
+      toast.error(
+        "Please fill in all required fields: First Name, Last Name, Plate Number, and Contact."
+      );
+      return;
+    }
+    if (!newCustomer.vehicle_type) {
+      toast.error("Please select a vehicle type.");
+      return;
+    }
+
     try {
       const response = await fetch(`${SERVER_URL}/create-customer`, {
         method: "POST",
@@ -245,6 +299,11 @@ export default function CustomerPage() {
         first_name: "",
         last_name: "",
         is_registered: true,
+        plate_number: "",
+        vehicle_type: "",
+        contact_num: "",
+        address: "",
+        email: "",
       });
       setShowAddDialog(false);
 
@@ -261,14 +320,20 @@ export default function CustomerPage() {
         <h1 className="text-3xl font-bold tracking-tight">
           Customer Management
         </h1>
-        <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
+        <Dialog
+          open={showAddDialog}
+          onOpenChange={(open) => {
+            setShowAddDialog(open);
+            if (!open) document.body.style.overflow = "unset";
+          }}
+        >
           <DialogTrigger asChild>
             <Button className="flex items-center gap-2">
               <Plus className="h-4 w-4" />
               Add Customer
             </Button>
           </DialogTrigger>
-          <DialogContent className="sm:max-w-[425px]">
+          <DialogContent className="sm:max-w-[425px] z-[9999] overflow-y-auto max-h-[90vh]">
             <DialogHeader>
               <DialogTitle>Add New Customer</DialogTitle>
               <DialogDescription>
@@ -305,6 +370,22 @@ export default function CustomerPage() {
                     setNewCustomer({
                       ...newCustomer,
                       last_name: e.target.value,
+                    })
+                  }
+                />
+              </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="plateNumber" className="text-right">
+                  Plate Number *
+                </Label>
+                <Input
+                  id="plateNumber"
+                  className="col-span-3"
+                  value={newCustomer.plate_number}
+                  onChange={(e) =>
+                    setNewCustomer({
+                      ...newCustomer,
+                      plate_number: e.target.value,
                     })
                   }
                 />
@@ -375,19 +456,63 @@ export default function CustomerPage() {
                   }
                 />
               </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="vehicleType" className="text-right">
+                  Vehicle Type
+                </Label>
+                <select
+                  id="vehicleType"
+                  className="col-span-3 border rounded-md px-3 py-2"
+                  value={newCustomer.vehicle_type || ""}
+                  onChange={(e) =>
+                    setNewCustomer({
+                      ...newCustomer,
+                      vehicle_type: e.target.value,
+                    })
+                  }
+                >
+                  <option value="">Select vehicle type</option>
+                  <option value="Car">Car</option>
+                  <option value="Motorcycle">Motorcycle</option>
+                  <option value="Bicycle">Bicycle</option>
+                </select>
+              </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setShowAddDialog(false)}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setNewCustomer({
+                    first_name: "",
+                    last_name: "",
+                    is_registered: true,
+                    plate_number: "",
+                    vehicle_type: "",
+                    contact_num: "",
+                    address: "",
+                    email: "",
+                  });
+                  setShowAddDialog(false);
+                }}
+              >
                 Cancel
               </Button>
+
               <Button onClick={handleAddCustomer}>Save Customer</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
 
         {/* Update Customer Dialog */}
-        <Dialog open={showUpdateDialog} onOpenChange={setShowUpdateDialog}>
-          <DialogContent className="sm:max-w-[425px]">
+        <Dialog
+          open={showUpdateDialog}
+          onOpenChange={(open) => {
+            console.log("Update Dialog open:", open);
+            setShowUpdateDialog(open);
+            if (!open) document.body.style.overflow = "unset";
+          }}
+        >
+          <DialogContent className="sm:max-w-[425px] z-[9999] overflow-y-auto max-h-[90vh]">
             <DialogHeader>
               <DialogTitle>Update Customer Details</DialogTitle>
               <DialogDescription>
@@ -484,9 +609,12 @@ export default function CustomerPage() {
         {/* Delete Confirmation Dialog */}
         <Dialog
           open={showDeleteConfirmation}
-          onOpenChange={setShowDeleteConfirmation}
+          onOpenChange={(open) => {
+            setShowDeleteConfirmation(open);
+            if (!open) document.body.style.overflow = "unset";
+          }}
         >
-          <DialogContent className="sm:max-w-[425px]">
+          <DialogContent className="sm:max-w-[425px] z-[9999] overflow-y-auto max-h-[90vh]">
             <DialogHeader>
               <DialogTitle>Confirm Deletion</DialogTitle>
               <DialogDescription>
@@ -511,11 +639,23 @@ export default function CustomerPage() {
 
       <Card className="w-full">
         <CardHeader>
-          <CardTitle>Registered Customers</CardTitle>
-          <CardDescription>
-            View and manage customers and their registration status.
-          </CardDescription>
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div>
+              <CardTitle>Registered Customers</CardTitle>
+              <CardDescription>
+                View and manage customers and their registration status.
+              </CardDescription>
+            </div>
+            <Input
+              type="text"
+              placeholder="Search by name or plate number"
+              className="w-[250px] md:w-[300px] border border-gray-300"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
         </CardHeader>
+
         <CardContent>
           <div className="rounded-md border">
             <div className="max-h-[480px] overflow-auto">
@@ -596,7 +736,14 @@ export default function CustomerPage() {
                           </div>
                         </TableCell>
                         <TableCell>
-                          <DropdownMenu>
+                          <DropdownMenu
+                            open={openDropdownFor === customer.customer_id}
+                            onOpenChange={(isOpen) => {
+                              setOpenDropdownFor(
+                                isOpen ? customer.customer_id : null
+                              );
+                            }}
+                          >
                             <DropdownMenuTrigger asChild>
                               <Button
                                 variant="ghost"
@@ -610,14 +757,29 @@ export default function CustomerPage() {
                               className="w-[160px]"
                             >
                               <DropdownMenuItem
-                                onClick={() => handleUpdateDetails(customer)}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  setOpenDropdownFor(null); // manually close the dropdown
+                                  setTimeout(
+                                    () => openUpdateDialog(customer),
+                                    10
+                                  ); // short delay
+                                }}
                                 className="cursor-pointer"
                               >
                                 <User className="mr-2 h-4 w-4" />
                                 Update Details
                               </DropdownMenuItem>
+
                               <DropdownMenuItem
-                                onClick={() => handleDeleteCustomer(customer)}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  setOpenDropdownFor(null); // close menu
+                                  setTimeout(
+                                    () => openDeleteDialog(customer),
+                                    10
+                                  );
+                                }}
                                 className="cursor-pointer text-red-600"
                               >
                                 <Trash2 className="mr-2 h-4 w-4" />

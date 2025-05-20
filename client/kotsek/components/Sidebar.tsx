@@ -28,6 +28,7 @@ const Sidebar = () => {
     email: string;
     username: string;
     profile_image: string | null;
+    role: string;
   } | null>(null);
   const pathname = usePathname();
   const router = useRouter();
@@ -54,6 +55,7 @@ const Sidebar = () => {
             username: parsedUser.username,
             // Map image_url to profile_image
             profile_image: parsedUser.image_url || parsedUser.profile_image,
+            role: parsedUser.role,
           });
         }
       } else {
@@ -99,6 +101,12 @@ const Sidebar = () => {
     { name: "Customer", icon: Users, href: "/customer" },
   ];
 
+  // Admin routes - only visible for admin users
+  const adminNavItems =
+    user?.role === "Admin"
+      ? [{ name: "Admin", icon: Lock, href: "/admin" }]
+      : [];
+
   // Auth-related navigation
   const authNavItem = isAuthenticated
     ? {
@@ -124,6 +132,7 @@ const Sidebar = () => {
   const navItems = [
     ...baseNavItems,
     ...(isAuthenticated ? protectedNavItems : []),
+    ...(isAuthenticated ? adminNavItems : []),
     authNavItem,
   ];
 
