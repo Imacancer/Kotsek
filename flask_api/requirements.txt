@@ -13,8 +13,8 @@ requests
 Werkzeug
 supabase
 flask-jwt-extended
-paddleocr
-paddlepaddle
+paddleocr==2.9.1
+paddlepaddle==2.6.2
 psycopg2-binary
 eventlet
 pandas
@@ -22,7 +22,8 @@ numpy
 scikit-learn
 sendgrid
 redis
-
+lap==0.5.12
+Flask-Mail
 
 # Put this just before torch packages:
 --extra-index-url https://download.pytorch.org/whl/cu121
