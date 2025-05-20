@@ -10,14 +10,14 @@ services:
       - ./flask_api:/app
     networks:
       - app-network
-
-    runtime: nvidia
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
       - redis
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
 
   redis:
     container_name: redis

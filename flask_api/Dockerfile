@@ -8,18 +8,10 @@ ENV PYTHONPATH="/app"
 
 # Install system dependencies
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    python3.10 \
-    python3.10-dev \
-    python3-pip \
-    gcc \
-    libgl1 \
-    libglib2.0-0 \
-    ffmpeg \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends gcc python3-dev libgl1 libglib2.0-0 ffmpeg && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN apt update && apt install -y ffmpeg
+RUN pip install --upgrade pip
 
 
 # Set python3.10 as default
