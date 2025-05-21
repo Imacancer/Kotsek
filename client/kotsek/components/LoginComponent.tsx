@@ -6,7 +6,7 @@ import axios from "axios";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { toast } from "sonner";
-import OTPVerification from "@/components/OTPVerification";
+import OTPVerification from "./OTPVerification";
 
 type ApiError = {
   response?: {
@@ -186,7 +186,7 @@ export default function LoginComponent() {
           className="absolute inset-0 w-full h-full object-cover"
           alt="Parking Lot Background"
         />
-        <div className="absolute inset-0 bg-gradient-to-b from-black/30 to-black/60" />
+        <div className="absolute inset-0 bg-black/30 backdrop-blur-xl" />
       </div>
       {/* Content */}
       {currentUser && (
@@ -207,7 +207,7 @@ export default function LoginComponent() {
         ) : (
           <div className="w-full max-w-sm">
             {/* Login Card */}
-            <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 shadow-xl border border-white/20 relative">
+            <div className="bg-white/30 backdrop-blur-md rounded-xl p-6 shadow-xl border border-white/40 relative">
               {/* Error message */}
               {error && (
                 <Alert
@@ -229,18 +229,18 @@ export default function LoginComponent() {
               )}
 
               <div className="text-center mb-6">
-                <h1 className="text-2xl font-bold text-white">
+                <h1 className="text-2xl font-bold text-black">
                   Ko<span className="text-yellow-500">Tsek</span>
                 </h1>
-                <p className="text-white/80 mt-1 text-sm">
+                <p className="text-white mt-1 text-sm">
                   Welcome back! Please login to continue.
                 </p>
               </div>
 
               {/* Tab Switcher */}
-              <div className="relative mb-6 flex bg-black/20 rounded-lg p-1">
+              <div className="relative mb-6 flex bg-gray-200 rounded-lg p-1">
                 <div
-                  className="absolute inset-y-1 w-1/2 bg-yellow-500 rounded-md transition-transform duration-200"
+                  className="absolute top-[2px] bottom-[2px] left-[2px] w-[calc(50%-4px)] bg-yellow-500 rounded-full transition-transform duration-200"
                   style={{
                     transform: `translateX(${isLogin ? "0%" : "100%"})`,
                   }}
@@ -248,15 +248,16 @@ export default function LoginComponent() {
                 <button
                   onClick={() => setIsLogin(true)}
                   className={`flex-1 text-sm font-medium py-1 text-center relative z-10 transition-colors duration-200 ${
-                    isLogin ? "text-white" : "text-white/60"
+                    isLogin ? "text-black" : "text-gray-500"
                   }`}
                 >
                   Login
                 </button>
+
                 <button
                   onClick={() => setIsLogin(false)}
                   className={`flex-1 text-sm font-medium py-1 text-center relative z-10 transition-colors duration-200 ${
-                    !isLogin ? "text-white" : "text-white/60"
+                    !isLogin ? "text-black" : "text-gray-500"
                   }`}
                 >
                   Register
@@ -288,7 +289,7 @@ export default function LoginComponent() {
                         id="email"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
-                        className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
+                        className="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-lg text-black placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
                         placeholder="Enter your email"
                       />
                     </div>
@@ -305,7 +306,7 @@ export default function LoginComponent() {
                         id="password"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
+                        className="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-lg text-black placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
                         placeholder="Enter your password"
                       />
                     </div>
@@ -313,7 +314,7 @@ export default function LoginComponent() {
                     <div className="flex items-center justify-between">
                       <button
                         type="button"
-                        className="text-xs text-yellow-500 hover:text-yellow-400 transition-all"
+                        className="text-xs text-yellow-500 hover:text-yellow-600 transition-all"
                       >
                         Forgot password?
                       </button>
@@ -321,7 +322,7 @@ export default function LoginComponent() {
 
                     <button
                       type="submit"
-                      className="w-full bg-yellow-500 text-white py-2 px-4 rounded-lg font-medium hover:bg-yellow-400 transition-all duration-200 text-sm disabled:opacity-50"
+                      className="w-full bg-yellow-500 text-white py-2 px-4 rounded-full font-medium hover:bg-yellow-400 transition-all duration-200 text-sm disabled:opacity-50"
                       disabled={isLoading}
                     >
                       {isLoading ? "Signing in..." : "Sign In"}
@@ -340,7 +341,7 @@ export default function LoginComponent() {
 
                     <button
                       type="button"
-                      className="w-full bg-white/10 border border-white/20 text-white py-2 px-4 rounded-lg font-medium hover:bg-white/20 transition-all duration-200 flex items-center justify-center gap-2 text-sm"
+                      className="w-full bg-white border border-black text-black py-2 px-4 rounded-full font-medium hover:bg-gray-100 transition-all duration-200 flex items-center justify-center gap-2 text-sm"
                       onClick={handleGoogleLogin}
                       disabled={!isLogin || isLoading}
                     >
@@ -369,11 +370,11 @@ export default function LoginComponent() {
 
                 {/* Register Form */}
                 <div
-                  className="absolute w-full transition-transform duration-300 ease-in-out"
+                  className="absolute w-full transition-transform duration-300 ease-in-out scrollbar-hide"
                   style={{
                     transform: `translateX(${isLogin ? "100%" : "0%"})`,
                     height: isLogin ? "0" : "460px",
-                    overflow: isLogin ? "hidden" : "auto",
+                    overflow: isLogin ? "hidden" : "scroll",
                   }}
                 >
                   <form className="space-y-4" onSubmit={handleRegister}>
@@ -389,7 +390,7 @@ export default function LoginComponent() {
                         id="name"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
-                        className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
+                        className="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-lg text-black placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
                         placeholder="Enter your username"
                       />
                     </div>
@@ -402,7 +403,7 @@ export default function LoginComponent() {
                         className="hidden"
                       />
                       <div
-                        className="w-24 h-24 mx-auto rounded-full border border-white/30 flex items-center justify-center overflow-hidden cursor-pointer bg-white/10"
+                        className="w-24 h-24 mx-auto rounded-full border border-gray-300 flex items-center justify-center overflow-hidden cursor-pointer bg-gray-100"
                         onClick={handleImageClick}
                       >
                         {imagePreview ? (
@@ -431,7 +432,7 @@ export default function LoginComponent() {
                         id="register-email"
                         value={registerEmail}
                         onChange={(e) => setRegisterEmail(e.target.value)}
-                        className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
+                        className="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-lg text-black placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
                         placeholder="Enter your email"
                       />
                     </div>
@@ -448,7 +449,7 @@ export default function LoginComponent() {
                         id="register-password"
                         value={registerPassword}
                         onChange={(e) => setRegisterPassword(e.target.value)}
-                        className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
+                        className="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-lg text-black placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
                         placeholder="Create a password"
                       />
                     </div>
@@ -465,14 +466,14 @@ export default function LoginComponent() {
                         id="confirm-password"
                         value={confirmPassword}
                         onChange={(e) => setConfirmPassword(e.target.value)}
-                        className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder:text-white/50 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
+                        className="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-lg text-black placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-transparent transition-all"
                         placeholder="Confirm your password"
                       />
                     </div>
 
                     <button
                       type="submit"
-                      className="w-full bg-yellow-500 text-white py-2 px-4 rounded-lg font-medium hover:bg-yellow-400 transition-all duration-200 text-sm disabled:opacity-50"
+                      className="w-full bg-yellow-500 text-white py-2 px-4 rounded-full font-medium hover:bg-yellow-400 transition-all duration-200 text-sm disabled:opacity-50"
                       disabled={isLoading}
                     >
                       {isLoading ? "Creating Account..." : "Create Account"}
@@ -491,7 +492,7 @@ export default function LoginComponent() {
 
                     <button
                       type="button"
-                      className="w-full bg-white/10 border border-white/20 text-white py-2 px-4 rounded-lg font-medium hover:bg-white/20 transition-all duration-200 flex items-center justify-center gap-2 text-sm"
+                      className="w-full bg-white border border-black text-black py-2 px-4 rounded-full font-medium hover:bg-gray-100 transition-all duration-200 flex items-center justify-center gap-2 text-sm"
                       disabled={isLoading}
                       onClick={handleGoogleLogin}
                     >

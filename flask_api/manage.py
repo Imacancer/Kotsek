@@ -72,7 +72,7 @@ def create_app():
     video_path_entry = "./sample/1entrynew.mp4"
     bike = "./sample/bike_in.mp4"
     bike_exit = "./sample/bikeout.mp4"
-    motor_entry = "./sample/motor_in.mp4"
+    motor_entry = "./sample/motorin.mp4"
     motor_exit = "./sample/motor_out.mp4"  
     entry_video_processor = EntryVideoProcessor(socketio, motor_entry) 
     exit_video_processor = VideoProcessor(socketio, motor_exit)

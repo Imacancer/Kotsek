@@ -306,7 +306,7 @@ def register():
                 bucket_name = 'profile.images'
                 file_path = f"user_profiles/{unique_filename}"
                 
-                print(f"📤 Uploading image to Supabase: {file_path}")
+                print(f"📤 Uploading image to Supabasee: {file_path}")
                 
                 # Upload the file
                 supabase.storage.from_(bucket_name).upload(

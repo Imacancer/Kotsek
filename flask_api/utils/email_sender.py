@@ -57,7 +57,15 @@ def send_otp_email(receiver_email, otp):
             </body>
         </html>
         """
+        print(f"SENDGRID_API_KEY starts witsh: {SENDGRID_API_KEY[:10]}... (length: {len(SENDGRID_API_KEY)})")
+        print(f"SENDER_EMAIL: {SENDER_EMAIL}")  
+        print(f"Receiver Email: {receiver_email}")  
+        print(f"OTP: {otp}")    
 
+        logger.debug(f"SENDGRID_API_KEY starts with: {SENDGRID_API_KEY[:10]}... (length: {len(SENDGRID_API_KEY)})")
+        logger.debug(f"SENDER_EMAIL: {SENDER_EMAIL}")
+        logger.debug(f"Receiver Email: {receiver_email}")
+        logger.debug(f"OTP: {otp}")
         # Create message
         message = Mail(
             from_email=Email(SENDER_EMAIL),
@@ -73,7 +81,7 @@ def send_otp_email(receiver_email, otp):
         
         return True
     except Exception as e:
-        logger.error(f"Error sending email: {str(e)}")
+        logger.error(f"Errorr sending email: {str(e)}")
         return False
 
 def test_sendgrid_connection():
