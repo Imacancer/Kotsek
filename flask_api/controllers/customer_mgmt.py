@@ -12,8 +12,6 @@ customer_bp = Blueprint('parking_customer', __name__)
 logger = logging.getLogger(__name__)
 load_dotenv()
 SENDER=os.getenv("MAIL_USERNAME")
-
-
 # Helper function to validate UUID
 def is_valid_uuid(uuid_string):
     try:
@@ -103,7 +101,7 @@ def send_congrats_email(to_email, name, plate, vehicle):
     subject = "Welcome to KoTsek Parking"
     body = f"""Hi {name},
 
-Congratulations! You are now a registered parking user.
+Good Day! You are now a registered parking user.
 
 Your vehicle:
 Plate Number: {plate}
