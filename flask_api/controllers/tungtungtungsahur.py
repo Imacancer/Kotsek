@@ -50,6 +50,7 @@ def weekly_summary():
         # Parse start and end dates from query parameters
         start_date_str = request.args.get('start_date')
         end_date_str = request.args.get('end_date')
+        generated_by = request.args.get('user', 'System')
         
         # Validate that both dates are provided
         if not start_date_str or not end_date_str:
@@ -65,6 +66,8 @@ def weekly_summary():
         # Format dates for display
         start_date_display = start_date.strftime('%B %d, %Y')
         end_date_display = end_date.strftime('%B %d, %Y')
+        sections_filter = request.args.get("sections", "")
+        sections_included = set(sections_filter.split(",")) if sections_filter else None
         
         # Initialize report structure
         report = {
@@ -75,6 +78,7 @@ def weekly_summary():
                 "display_range": f"{start_date_display} - {end_date_display}"
             },
             "generated_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC'),
+            "generated_by": generated_by,
             "sections": []
         }
         
@@ -133,7 +137,8 @@ def weekly_summary():
             }
         }
         
-        report["sections"].append(traffic_summary)
+        if not sections_included or "summary" in sections_included:
+            report["sections"].append(traffic_summary)
         
         # -----------------------------------
         # Section 2: Daily Traffic Breakdown
@@ -216,7 +221,8 @@ def weekly_summary():
             "busiest_day": busiest_day
         }
         
-        report["sections"].append(daily_breakdown)
+        if not sections_included or "daily" in sections_included:
+            report["sections"].append(daily_breakdown)
         
         # -----------------------------------
         # Section 3: Hourly Traffic Patterns
@@ -266,7 +272,8 @@ def weekly_summary():
             "peak_exit_hour": peak_exit_hour
         }
         
-        report["sections"].append(hourly_patterns)
+        if not sections_included or "hourly" in sections_included:
+            report["sections"].append(hourly_patterns)
         
         # -----------------------------------
         # Section 4: Parking Slot Utilization
@@ -357,7 +364,8 @@ def weekly_summary():
             "section_statistics": section_stats
         }
         
-        report["sections"].append(slot_utilization)
+        if not sections_included or "utilization" in sections_included:
+            report["sections"].append(slot_utilization)
         
         # -----------------------------------
         # Section 5: Customer Analytics
@@ -448,7 +456,8 @@ def weekly_summary():
             "customer_favorite_spots": customer_favorite_spots
         }
         
-        report["sections"].append(customer_analytics)
+        if not sections_included or "customers" in sections_included:
+            report["sections"].append(customer_analytics)
         
         # -----------------------------------
         # Section 6: Duration Distribution
@@ -489,7 +498,8 @@ def weekly_summary():
             "duration_distribution": duration_dist
         }
         
-        report["sections"].append(duration_analysis)
+        if not sections_included or "duration" in sections_included:
+            report["sections"].append(duration_analysis)
         
         return jsonify(report), 200
         

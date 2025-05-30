@@ -137,7 +137,9 @@ class VideoProcessor:
         elif re.fullmatch(r'\d{3}[A-Z]{3}', cleaned):  # Motorcycle plate
             formatted = f"{cleaned[:3]} {cleaned[3:]}"
             return formatted
-
+            # New rule: Accept any 6-character alphanumeric (letters and/or numbers)
+        elif len(cleaned) == 6 and re.fullmatch(r'[A-Z0-9]{6}', cleaned):
+            return cleaned  # or format however you want
         return None
     
     def assign_bicycle(self, entry_id, customer_id, plate_number, entry_time):
@@ -574,7 +576,7 @@ class VideoProcessor:
                             if re.fullmatch(r'[A-Z]{3}\d{4}', cleaned):
                                 plate_text = f"{cleaned[:3]} {cleaned[3:]}"
                             elif re.fullmatch(r'\d{3}[A-Z]{3}', cleaned):  # Motorcycle plate
-                                plate_text = f"{cleaned[:3]} {cleaned[3:]}"
+                                plate_text = f"{cleaned[:3]} {cleaned[3:]}"                            
                             else:
                                 plate_text = raw_text  # fallback if it doesn't match
 
@@ -1070,6 +1072,8 @@ class EntryVideoProcessor:
         elif re.fullmatch(r'\d{3}[A-Z]{3}', cleaned):  # Motorcycle plate
             formatted = f"{cleaned[:3]} {cleaned[3:]}"
             return formatted
+        elif len(cleaned) == 6 and re.fullmatch(r'[A-Z0-9]{6}', cleaned):
+            return cleaned  # or format however you want
 
         return None
     
@@ -1624,6 +1628,7 @@ class EntryVideoProcessor:
 
                         direction = info.get("direction", None)
                         if label == "bicycle":
+                            print(f"Printing bicycle logic")
                             
                             if self.is_exit_camera:
                                 self.upload_vehicle_exit(
