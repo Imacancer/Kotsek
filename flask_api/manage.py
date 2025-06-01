@@ -27,7 +27,7 @@ from db.db import init_db, db  # Import the init_db function and db instance
 
 load_dotenv()
 
-socketio = SocketIO(cors_allowed_origins="*", ping_timeout=1, ping_interval=2, max_http_buffer_size=1e8,async_mode='eventlet')
+socketio = SocketIO(cors_allowed_origins="*", ping_timeout=5, ping_interval=10, max_http_buffer_size=1e8,async_mode='eventlet', transport=['polling','websocket'])
 def create_app():
 
     global entry_video_processor, exit_video_processor
@@ -87,6 +87,9 @@ def create_app():
     
     app.active_guard_id = property(lambda app: app.entry_video_processor.active_guard_id)
 
+    @socketio.on_error_default
+    def default_error_handler(e):
+        print("🔥SocketIO Error:", e)
 
     @socketio.on("start_entry_video")
     def handle_start_entry_video(data):

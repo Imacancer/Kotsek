@@ -50,4 +50,8 @@ def stream_unassigned_vehicles():
     return Response(stream_with_context(event_stream()), 
                     mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache',
-                             'Access-Control-Allow-Origin': '*'})
+                             'Access-Control-Allow-Origin': 'http://localhost:3000',
+                             'Access-Control-Allow-Credentials': 'true',
+                             'Access-Control-Allow-Methods': 'GET, OPTIONS',
+                             'Access-Control-Allow-Headers': 'Content-Type',
+                             'X-Accel-Buffering': 'no'})

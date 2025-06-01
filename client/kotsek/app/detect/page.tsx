@@ -169,7 +169,7 @@ const SurveillanceInterface = () => {
   const BASE_URL = "http://localhost:5001";
   useEffect(() => {
     socket.current = io(BASE_URL, {
-      transports: ["polling", "websocket"], // ⬅️ Add "polling" as fallback
+      transports: ["websocket", "polling"], // ⬅️ Add "polling" as fallback
       reconnection: true,
     });
 
@@ -517,29 +517,43 @@ const SurveillanceInterface = () => {
     try {
       // Create a new EventSource connection
       const eventSource = new EventSource(
-        `${SERVER_URL}/api/unassigned-vehicles`
+        `${SERVER_URL}/api/unassigned-vehicles`,
+        {
+          withCredentials: true,
+        }
       );
       eventSourceRef.current = eventSource;
 
       // Handle incoming messages
       eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.success) {
-          setUnassignedVehicles(data.data);
-        } else {
-          console.error("Error in SSE data:", data.error);
-          toast.error("Failed to load unassigned vehicles");
+        try {
+          const data = JSON.parse(event.data);
+          if (data.success) {
+            setUnassignedVehicles(data.data);
+          } else {
+            console.error("Error in SSE data:", data.error);
+            toast.error("Failed to load unassigned vehicles");
+          }
+        } catch (error) {
+          console.error("Error parsing SSE data:", error);
+          toast.error("Failed to parse unassigned vehicles data");
         }
       };
 
       // Handle errors
       eventSource.onerror = (error) => {
         console.error("EventSource error:", error);
-        eventSource.close();
-        eventSourceRef.current = null;
-        toast.error(
-          "Connection to unassigned vehicles feed lost. Reconnecting..."
-        );
+        // eventSource.close();
+        // eventSourceRef.current = null;
+        // toast.error(
+        //   "Connection to unassigned vehicles feed lost. Reconnecting..."
+        if (eventSource.readyState === EventSource.CLOSED) {
+          eventSource.close();
+          eventSourceRef.current = null;
+          toast.error(
+            "Connection to unassigned vehicles feed lost. Reconnecting..."
+          );
+        }
 
         // Attempt to reconnect after a delay
         setTimeout(() => fetchUnassignedVehicles(), 5000);
