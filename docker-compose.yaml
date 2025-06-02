@@ -1,27 +1,23 @@
 services:
-
   flask_api:
     container_name: flask_api
-    build: 
+    build:
       context: ./flask_api
       dockerfile: Dockerfile
     ports:
-      - "5001:5001"      
+      - "5001:5001"
     volumes:
       - ./flask_api:/app
     networks:
       - app-network
+
+    runtime: nvidia
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - FLASK_ENV=development
-      - FLASK_DEBUG=1
-      - PYTHONUNBUFFERED=1
     depends_on:
       - redis
-    # runtime: nvidia
-    # environment:
-    #   - NVIDIA_VISIBLE_DEVICES=all
 
   redis:
     container_name: redis
@@ -37,7 +33,7 @@ services:
 
   client:
     container_name: client
-    build: 
+    build:
       context: ./client/kotsek
       dockerfile: Dockerfile
     ports:

@@ -16,6 +16,195 @@ from models.parking_slot import ParkingSlot
 
 regression_bp = Blueprint('regression', __name__)
 
+
+
+@regression_bp.route('/heatmap', methods=['GET'])
+@jwt_required()
+@role_required(['Admin'])
+def get_heatmap_data():
+    try:
+        start_date = datetime.now().replace(day=1, hour=0, minute=0, second=0)
+        end_date = datetime.now()
+
+        entries_query = db.session.query(
+            func.date_trunc('hour', VehicleEntry.entry_time).label('timestamp'),
+            func.count().label('count')
+        ).filter(
+            VehicleEntry.entry_time >= start_date,
+            VehicleEntry.entry_time <= end_date
+        ).group_by('timestamp').all()
+
+        df = pd.DataFrame(entries_query, columns=['timestamp', 'count'])
+        df['day'] = df['timestamp'].dt.strftime('%Y-%m-%d')
+        df['hour'] = df['timestamp'].dt.hour
+
+        heatmap_data = {}
+        for _, row in df.iterrows():
+            day = row['day']
+            hour = str(row['hour'])
+            if day not in heatmap_data:
+                heatmap_data[day] = {}
+            heatmap_data[day][hour] = int(row['count'])
+
+        return jsonify(heatmap_data), 200
+    except Exception as e:
+        print(f"Error in heatmap: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@regression_bp.route('/turnover/trend', methods=['GET'])
+@jwt_required()
+@role_required(['Admin'])
+def turnover_trend():
+    try:
+        end_date = datetime.now()
+        start_date = end_date.replace(day=1)
+        days = pd.date_range(start=start_date, end=end_date)
+
+        results = []
+        for day in days:
+            next_day = day + timedelta(days=1)
+            sessions = db.session.query(
+                VehicleEntry.entry_time,
+                VehicleExit.exit_time
+            ).join(
+                ParkingSession,
+                VehicleEntry.entry_id == ParkingSession.entry_id
+            ).join(
+                VehicleExit,
+                VehicleExit.exit_id == ParkingSession.exit_id
+            ).filter(
+                VehicleEntry.entry_time >= day,
+                VehicleEntry.entry_time < next_day
+            ).all()
+
+            durations = [
+                (s.exit_time - s.entry_time).total_seconds() / 3600
+                for s in sessions if s.exit_time
+            ]
+            avg_duration = sum(durations) / len(durations) if durations else 0
+            turnover = 24 / avg_duration if avg_duration > 0 else 0
+
+            results.append({
+                'date': day.strftime('%Y-%m-%d'),
+                'avg_turnover_time': round(avg_duration, 2),
+                'turnover_rate': round(turnover, 2)
+            })
+
+        return jsonify(results), 200
+    except Exception as e:
+        print(f"Error in turnover_trend: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@regression_bp.route('/traffic/hourly-prediction', methods=['GET'])
+@jwt_required()
+@role_required(['Admin'])
+def hourly_prediction():
+    try:
+        # Use all historical entry records
+        entries = db.session.query(
+            func.extract('hour', VehicleEntry.entry_time).label('hour'),
+            func.count().label('count')
+        ).group_by('hour').all()
+
+        # Convert to dict
+        hourly_data = {int(row.hour): int(row.count) for row in entries}
+
+        # Normalize by number of days to get average per hour
+        first_entry = db.session.query(func.min(VehicleEntry.entry_time)).scalar()
+        last_entry = db.session.query(func.max(VehicleEntry.entry_time)).scalar()
+
+        total_days = (last_entry.date() - first_entry.date()).days + 1
+
+        predicted_data = []
+        for hour in range(6, 23):  # 6 AM to 10 PM
+            count = hourly_data.get(hour, 0)
+            avg = count / total_days
+            predicted_data.append({
+                "hour": hour,
+                "predicted_entries": round(avg, 2)
+            })
+
+        return jsonify(predicted_data), 200
+    except Exception as e:
+        print(f"Error in hourly_prediction: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@regression_bp.route('/traffic/arima-forecast', methods=['GET'])
+@jwt_required()
+@role_required(['Admin'])
+def forecast_hourly_traffic_arima():
+    try:
+        from pmdarima import auto_arima
+        from collections import defaultdict
+
+        # Get historical vehicle entry timestamps
+        entries = db.session.query(VehicleEntry.entry_time).all()
+        timestamps = [row.entry_time for row in entries if row.entry_time]
+
+        print(f"[DEBUG] Total timestamps fetched: {len(timestamps)}")
+
+        if not timestamps:
+            return jsonify({"error": "No data to forecast"}), 400
+
+        # Create hourly count time series
+        df = pd.DataFrame(timestamps, columns=['timestamp'])
+        df = df.set_index('timestamp').resample('H').size().rename('count').to_frame()
+        df = df.asfreq('H').fillna(0)
+
+        print(f"[DEBUG] Resampled DataFrame head:\n{df.head()}")
+
+        # Use auto_arima to find best model
+        model = auto_arima(
+            df['count'],
+            start_p=0, max_p=5,
+            start_q=0, max_q=5,
+            d=None,            # let it decide differencing
+            seasonal=False,
+            stepwise=True,
+            error_action="ignore",
+            suppress_warnings=True,
+            trace=False
+        )
+
+        # Forecast 17 hours (6 AM to 10 PM)
+        forecast_hours = 17
+        forecast_result = model.predict(n_periods=forecast_hours)
+
+        # Define fixed forecast window starting at 6AM tomorrow
+        tomorrow = (datetime.now() + timedelta(days=1)).date()
+        start = datetime.combine(tomorrow, datetime.min.time()) + timedelta(hours=6)
+        future_index = pd.date_range(start=start, periods=forecast_hours, freq='H')
+
+        print(f"[DEBUG] Future index range: {future_index[0]} to {future_index[-1]}")
+
+        # Group by 3-hour blocks
+        group_map = defaultdict(list)
+        for ts, val in zip(future_index, forecast_result):
+            group_start_hour = (ts.hour - 6) // 3 * 3 + 6
+            label = f"{group_start_hour:02d}:00–{group_start_hour + 3:02d}:00"
+            group_map[label].append(max(0, val))  # ensure no negative predictions
+
+        # Average values per group
+        grouped_forecast = [
+            {
+                "hour_group": label,
+                "predicted_entries": round(sum(vals) / len(vals), 2)
+            }
+            for label, vals in group_map.items()
+        ]
+
+        print(f"[DEBUG] Grouped forecast data:\n{grouped_forecast}")
+
+        return jsonify(grouped_forecast), 200
+
+    except Exception as e:
+        print("Error in ARIMA forecast:", str(e))
+        return jsonify({"error": str(e)}), 500
+
+
 def get_time_series_data(start_date, end_date, lot_id=None):
     """Get time series data for vehicle entries and exits"""
     try:
